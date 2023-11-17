@@ -1,0 +1,2722 @@
+---
+title: "Untitled"
+output: html_document
+date: "2022-12-27"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+1. change "assortment" file
+2. change "sku_ordered_sales" (entire sku_ordered_sales DOMO card) file
+3. add AMZ new monthly sales in "file_paths"
+4. run seasonality
+5. "skutomastersku" using new "sku_ordered_sales"
+6. change "days_raw", "OH_imp" (only country=US) file
+7. df_indoor_4
+  a. put recent months to front in "pushback_with_4/3/2/1", 
+  b. put the last month to bottom in "push_forward"
+
+```{r, warning=FALSE, messsage = FALSE}
+#Libraries
+library(readr)
+library(dplyr)
+library(readxl)
+library(scales)
+library(lubridate)
+library(writexl)
+library(stringr)
+library(tidyr)
+library(purrr)
+library(data.table)
+library(openxlsx)
+```
+
+
+```{r,warning=FALSE, message = FALSE}
+#Import Files
+Assort_Date <- as.Date(today()-(wday(today())+1), format = "%Y.%m.%d")
+Year = year(Assort_Date)
+
+# assortment_in <- read_excel(paste0("C:/Users/Yulin Pan/Desktop/woh calculation files/Indoor Assortment Report-", Year, ".", substr(Assort_Date,6,7),".", substr(Assort_Date,9,10), ".xlsx"), sheet = "Forecast by StockKey - PCS", 
+#      skip = 4)
+
+assortment_in <- read_excel(paste0("C:/Users/Yulin Pan/Desktop/woh calculation files/WOH 9.22/Indoor Assortment Report-2023.09.28.xlsx"), sheet = "Forecast by StockKey - PCS", 
+     skip = 4)
+
+
+# sku_stockey_to_mastersku = read_excel("C:/Users/Yulin Pan/Downloads/SKU_HM_map 23.01.16.xlsx", sheet = "SKU")%>%
+#   rename(`master sku` = MasterSKU,
+#          Category1 = `...4`)
+
+# sku_hm_map = read_excel("C:/Users/Yulin Pan/Downloads/SKU_HM_map 23.01.16.xlsx", sheet = "map")%>%
+#   rename(`master sku` = MasterSKU)%>%
+#   mutate(`master sku` = as.character(`master sku`))
+
+sku_stockey_to_mastersku = read_csv("C:/Users/Yulin Pan/Desktop/SKU to HM/Master Mapping List.csv")%>%
+  # rename(`master sku` = `mastersku`,
+  #        SKU_stockey_sorted = `group stockkey`)%>%
+  mutate(`master sku` = as.character(`master sku`))%>%
+  select(`master sku`, SKU_stockey_sorted)%>%
+  group_by(`master sku`)%>%
+  summarise(SKU_stockey_sorted = max(SKU_stockey_sorted))
+
+sku_hm_map = read_csv("C:/Users/Yulin Pan/Desktop/SKU to HM/Master Mapping List.csv")%>%
+  # rename(`master sku` = `mastersku`,
+  #        SKU_stockey_sorted = `group stockkey`,
+  #        `HM_stockey` = `hm stockey`,
+  #        HM_Count = hm_count,
+  #        HM_pcs_needed = piece1)%>%
+  mutate(`master sku` = as.character(`master sku`))
+
+sku_ordered_sales<-read_csv("C:/Users/Yulin Pan/Downloads/SKU Ordered Sales (48).csv")
+
+current_month <- format(Sys.Date(), "%Y-%m")
+# Calculate the start and end dates based on the current month
+end_date <- as.Date(paste0(substr(current_month, 1, 4), "-", substr(current_month, 6, 7), "-01"))-1
+start_date <- end_date-days(364)
+
+sales_raw<-sku_ordered_sales%>%
+  filter(orderdate <= end_date & orderdate >= start_date)
+
+
+sales <- sales_raw %>%
+  mutate(`master sku` = as.character(`master sku`)) %>%
+  left_join(sku_stockey_to_mastersku, by = "master sku") %>%
+  filter(!is.na(SKU_stockey_sorted)) %>%
+  rename(`Merchant Name` = merchantname, `Order Date` = orderdate, SKU = skuorder) %>%
+  mutate(`pieces sold` = ifelse(is.na(`pieces sold`), 0, `pieces sold`)) %>%
+  filter(!(`Merchant Name` == "WALMARTDIRECT" & `Order Date` == as.Date("2022-11-20"))) %>%
+  filter(!(`Merchant Name` %in% c("AMAZONDIRECTIMPORTCKH", "AMAZONINNETWORKCKH", "AMAZONDIRECTFULFILLMENTCKH", "GDFLIQUIDATION", "OVERSTOCKLIQUIDATION", "WAYFAIRCASTLEGATE"))) %>%
+  mutate(SKU = toupper(SKU)) %>%
+  filter(!grepl("\\.(UK|CA)", `Merchant Name`))
+
+
+mastersku_c1<-sku_ordered_sales%>%
+  mutate(`master sku` = as.character(`master sku`))%>%
+  group_by(`master sku`)%>%
+  summarise(Category1 = max(category1))
+
+mastersku_c32<-sku_ordered_sales%>%
+  mutate(`master sku` = as.character(`master sku`))%>%
+  group_by(`master sku`)%>%
+  summarise(C32 = max(`category3-2`))
+
+
+sku_sorted_to_sku<-sales%>%
+  group_by(SKU_stockey_sorted, `Merchant Name`)%>%
+  summarise(SKU = max(SKU))%>%
+  select(-c("Merchant Name"))%>%
+  distinct(SKU)
+
+# scandate<-assortment_in%>%
+#   select(`First Scan date`, StockKey)%>%
+#   right_join(sku_hm_map, by=c("StockKey" = "HM_stockey"))%>%
+#   filter(!is.na(`First Scan date`))%>%
+#   group_by(SKU_stockey_sorted)%>%
+#   summarise(`First_Date` = max(`First Scan date`))%>%
+#   mutate(push_forward = ifelse(today() - as.Date(`First_Date`) <= 182, 1,0))%>%
+#   left_join(sku_sorted_to_sku, by=c("SKU_stockey_sorted"))%>%
+#   filter(!is.na(SKU))%>%
+#   filter(push_forward == 1)%>%
+#   select(SKU,push_forward, `First_Date`)%>%
+#   mutate(monthstiltoday = as.numeric(ceiling((today()-as.Date(First_Date))/30.417)))
+
+scandate<-sku_ordered_sales%>%
+  group_by(skuorder, merchantname)%>%
+  slice(which.min(as.Date(orderdate)))%>%
+  rename(First_Date = orderdate, SKU=skuorder)%>%
+  mutate(push_forward = ifelse(today() - as.Date(`First_Date`) <= 182, 1, 0))%>%
+  filter(push_forward == 1)%>%
+  select(SKU,merchantname, push_forward, `First_Date`)%>%
+  mutate(monthstiltoday = as.numeric(ceiling((today()-as.Date(First_Date))/30.417)))
+
+DI_List <- read_excel("C:/Users/Yulin Pan/Downloads/Amazon DI Assortment Count 7.22.22.xlsx")
+DI_List <- DI_List[c(2,5)]
+DI_List$SKU =as.character(DI_List$SKU)
+
+file_paths <- c(
+  "C:/Users/Yulin Pan/Downloads/Daily Sales.xlsx",
+  "C:/Users/Yulin Pan/Downloads/Daily Sales (1).xlsx",
+  "C:/Users/Yulin Pan/Downloads/Daily Sales (2).xlsx",
+  "C:/Users/Yulin Pan/Downloads/Daily Sales (3).xlsx",
+  "C:/Users/Yulin Pan/Downloads/Daily Sales (4).xlsx",
+  "C:/Users/Yulin Pan/Downloads/Daily Sales (5).xlsx",
+  "C:/Users/Yulin Pan/Downloads/Daily Sales (6).xlsx",
+  "C:/Users/Yulin Pan/Downloads/Daily Sales (7).xlsx",
+  "C:/Users/Yulin Pan/Downloads/Daily Sales (9).xlsx",
+  "C:/Users/Yulin Pan/Downloads/Daily Sales (10).xlsx",
+  "C:/Users/Yulin Pan/Downloads/Daily Sales (12).xlsx",
+  "C:/Users/Yulin Pan/Downloads/Daily Sales (13).xlsx",
+  "C:/Users/Yulin Pan/Downloads/Daily Sales (14).xlsx",
+  "C:/Users/Yulin Pan/Downloads/Daily Sales (16).xlsx",
+  "C:/Users/Yulin Pan/Downloads/Daily Sales (17).xlsx"
+)
+
+amzdata <- map_dfr(file_paths, ~ read_excel(.x))
+
+amzdata <- amzdata[complete.cases(amzdata$Date),]
+
+amz_c1<-amzdata%>%
+  group_by(ASIN)%>%
+  summarise(Category1 = max(Category1))
+
+amz_asintosku1<-amzdata%>%
+  group_by(ASIN)%>%
+  summarise(SKUOrder = max(SKUOrder))
+
+amz_asintosku <- read_csv("C:/Users/Yulin Pan/Downloads/Catalog_Manufacturing_UnitedStates (2).csv", skip=1)%>%
+  filter(!is.na(`Model Number`))%>%
+  group_by(ASIN)%>%
+  summarise(SKUOrder = max(`Model Number`))%>%
+  full_join(amz_asintosku1,by=c("ASIN"))%>%
+  mutate(SKUOrder = ifelse(!is.na(SKUOrder.y), SKUOrder.y, SKUOrder.x))%>%
+  select(ASIN, SKUOrder)
+ 
+
+# amzdata13 <- read_csv("C:/Users/Yulin Pan/Downloads/Sales_Manufacturing_Retail_UnitedStates_Custom_8-29-2023_8-30-2023.csv", skip=1)%>%
+#   left_join(amz_asintosku, by=c("ASIN"))%>%
+#   filter(!is.na(SKUOrder))%>%
+#   mutate(Date = as.Date("2023-08-29"))%>%
+#   select(ASIN, SKUOrder, `Ordered Units`, Date)
+
+amzdata<-amzdata%>%
+  select(ASIN, SKUOrder, `Ordered Units`, Date)
+
+# amzdata=rbind(amzdata,amzdata13)
+```
+
+```{r}
+skutomastersku = read_excel("C:/Users/Yulin Pan/Desktop/SKU to HM/skutomastersku.xlsx")
+
+
+
+Master_DI_List<-DI_List%>%
+  left_join(skutomastersku, by=c("SKU"))%>%
+  distinct(`master sku`, DI)
+Master_DI_List=Master_DI_List[which(!is.na(Master_DI_List$`master sku`)),]
+```
+
+
+
+```{r}
+#Seasonality
+season_in<-read_excel("C:/Users/Yulin Pan/Desktop/48&12&4/Oct 2023/seasonality.xlsx", sheet = "Indoor sea")
+
+
+# Jan_in = 0.0889
+# Feb_in = 0.0750
+# Mar_in = 0.0757
+# Apr_in = 0.0710
+# May_in = 0.0744
+# Jun_in = 0.0702
+# Jul_in = 0.0782
+# Aug_in = 0.0834
+# Sep_in = 0.0860
+# Oct_in = 0.0846
+# Nov_in = 0.1247
+# Dec_in = 0.0879
+# 
+# 
+# Jan_in_beanbag = 0.07644
+# Feb_in_beanbag = 0.05777
+# Mar_in_beanbag = 0.04528
+# Apr_in_beanbag = 0.04564
+# May_in_beanbag = 0.04493
+# Jun_in_beanbag = 0.06160
+# Jul_in_beanbag = 0.05960
+# Aug_in_beanbag = 0.08689
+# Sep_in_beanbag = 0.07115
+# Oct_in_beanbag = 0.07006
+# Nov_in_beanbag = 0.17028
+# Dec_in_beanbag = 0.21036
+# 
+# Jan_in_xmas = 0.0265
+# Feb_in_xmas = 0.0030
+# Mar_in_xmas = 0.0015
+# Apr_in_xmas = 0.0009
+# May_in_xmas = 0.0008
+# Jun_in_xmas = 0.0015
+# Jul_in_xmas = 0.0047
+# Aug_in_xmas = 0.0093
+# Sep_in_xmas = 0.0362
+# Oct_in_xmas = 0.1396
+# Nov_in_xmas = 0.5847
+# Dec_in_xmas = 0.1913
+# 
+# Jan_in_fireplace = 0.0528
+# Feb_in_fireplace = 0.0530
+# Mar_in_fireplace = 0.0543
+# Apr_in_fireplace = 0.0545
+# May_in_fireplace = 0.0517
+# Jun_in_fireplace = 0.0517
+# Jul_in_fireplace = 0.0649
+# Aug_in_fireplace = 0.0980
+# Sep_in_fireplace = 0.0883
+# Oct_in_fireplace = 0.1250
+# Nov_in_fireplace = 0.1458
+# Dec_in_fireplace = 0.1600
+# 
+# 
+# 
+# season_in<-data.frame(c(Jan_in,Feb_in,Mar_in,Apr_in,May_in,Jun_in,Jul_in,Aug_in,Sep_in,Oct_in,Nov_in,Dec_in))
+# season_in_beanbag<-data.frame(c(Jan_in_beanbag,Feb_in_beanbag,Mar_in_beanbag,Apr_in_beanbag,May_in_beanbag,Jun_in_beanbag,Jul_in_beanbag,Aug_in_beanbag,Sep_in_beanbag,Oct_in_beanbag,Nov_in_beanbag,Dec_in_beanbag))
+# season_in_xmas<-data.frame(c(Jan_in_xmas,Feb_in_xmas,Mar_in_xmas,Apr_in_xmas,May_in_xmas,Jun_in_xmas,Jul_in_xmas,Aug_in_xmas,Sep_in_xmas,Oct_in_xmas,Nov_in_xmas,Dec_in_xmas
+# ))
+# season_in_fireplace<-data.frame(c(Jan_in_fireplace,Feb_in_fireplace,Mar_in_fireplace,Apr_in_fireplace,May_in_fireplace,Jun_in_fireplace,Jul_in_fireplace,Aug_in_fireplace,Sep_in_fireplace,Oct_in_fireplace,Nov_in_fireplace,Dec_in_fireplace
+# ))
+```
+
+
+```{r}
+start=as.Date(paste(format(Sys.Date(), "%Y"), format(Sys.Date(), "%m"), "01", sep = "-"))-months(12)
+end=as.Date(paste(format(Sys.Date(), "%Y"), format(Sys.Date(), "%m"), "01", sep = "-"))-months(1)
+if (as.numeric(month(start))<=9){
+  filterdatemin=as.numeric(paste0(year(start),"0",month(start)))
+} else{
+  filterdatemin=as.numeric(paste0(year(start),month(start)))
+}
+if (as.numeric(month(end))<=9){
+  filterdatemax=as.numeric(paste0(year(end),"0",month(end)))
+} else{
+  filterdatemax=as.numeric(paste0(year(end),month(end)))
+}
+
+days_raw <- read_csv("C:/Users/Yulin Pan/Downloads/SKU OutOfStock Rate_Monthly (46).csv")%>%
+  filter(inventorymonth<=filterdatemax & inventorymonth >= filterdatemin)
+days_raw$skuorder = toupper(days_raw$skuorder)
+days<-days_raw[-c(grep(".UK",days_raw$merchantid)),]
+days<-days[-c(grep(".CA",days$merchantid)),]
+
+# OH_2023_Sep<-read_csv("C:/Users/Yulin Pan/Downloads/SKU online details (49).csv")%>%
+#   group_by(skuorder,merchantid)%>%
+#   summarise(Sep_OH = sum(is_online)/29*30,
+#             Category1 = max(category1))
+
+OH_imp<-read_csv("C:/Users/Yulin Pan/Downloads/SKU online details (49).csv")%>%
+  group_by(skuorder,merchantid)%>%
+  summarise(OH = sum(is_online),
+            Category1 = max(category1))%>%
+  ungroup()%>%
+  mutate(OH = OH / max(OH)*days_in_month(today()-months(1)))
+
+category3 <- days_raw%>%
+  group_by(skuorder, merchantid)%>%
+  summarise(Category3 = max(Category3))
+
+mastersku_c3<-category3%>% 
+  left_join(skutomastersku, by=c("skuorder" = "SKU", "merchantid" = "Merchant Name"))%>%
+  filter(!is.na(`master sku`))%>%
+  mutate(`master sku` = as.character(`master sku`))%>%
+  group_by(`master sku`)%>%
+  summarise(`Category3` = max(`Category3`))
+```
+
+```{r}
+skutomastersku_amz = read_excel("C:/Users/Yulin Pan/Desktop/SKU to HM/skutomastersku_amz.xlsx")
+skutomastersku_amz_cleaned<-skutomastersku_amz%>%
+  group_by(SKU)%>%
+  summarise(`master sku` = max(`master sku`))
+amzdata1<-amzdata%>%
+  left_join(skutomastersku_amz_cleaned, by=c("SKUOrder" = "SKU"))
+
+
+loop_amz = which(is.na(amzdata1$`master sku`))
+# for (i in loop_amz){
+#   amzdata1$`master sku`[i] = skutomastersku$`master sku`[which(skutomastersku$SKU==amzdata$SKUOrder[i])[1]]
+# }
+amzdata1$`master sku`[loop_amz] <- skutomastersku$`master sku`[match(amzdata$SKUOrder[loop_amz], skutomastersku$SKU)]
+
+amz<-amzdata1%>%
+  left_join(sku_stockey_to_mastersku, by=c("master sku"))%>%
+  left_join(mastersku_c1, by=c("master sku"))%>%
+  filter(!is.na(SKU_stockey_sorted))
+
+amz$`Ordered Units`[which(amz$`Ordered Units`<0)]<-0
+
+loop_amz_c1 = which(is.na(amz$Category1))
+for (i in loop_amz_c1){
+  amz$Category1[i] = amz_c1$Category1[which(amz_c1$ASIN==amz$ASIN[i])[1]]
+}
+
+amz<-amz%>%
+  filter(Category1 == "INDOOR")
+```
+
+
+```{r}
+sales_in = sales[which(sales$category1=="INDOOR"),]
+
+current_year <- as.numeric(format(Sys.Date(), "%Y"))
+
+days_new<-days%>%
+  select(merchantid, Category1, skuorder, online_days, inventorymonth)
+# day_Jan = days_new[which(days_new$inventorymonth<=202301 & days_new$inventorymonth>=202301),]%>%
+#   rename(day_Jan = online_days)
+day_Jan = days_new %>%
+  filter((inventorymonth == paste(current_year, "01", sep = "")) | (inventorymonth == paste(current_year - 1, "01", sep = ""))) %>%
+  rename(day_Jan = online_days)
+# day_Jan = OH_2023_Jan%>%
+#   rename(day_Jan = Jan_OH)%>%
+#   filter(day_Jan != 0)
+# day_Feb = days_new[which(days_new$inventorymonth<=202302 & days_new$inventorymonth>=202302),]%>%
+#   rename(day_Feb = online_days)
+day_Feb = days_new %>%
+  filter((inventorymonth == paste(current_year, "02", sep = "")) | (inventorymonth == paste(current_year - 1, "02", sep = ""))) %>%
+  rename(day_Feb = online_days)
+# day_Feb = OH_2023_Feb%>%
+#   rename(day_Feb = Feb_OH)%>%
+#   filter(day_Feb != 0)
+# day_Mar = days_new[which(days_new$inventorymonth<=202303 & days_new$inventorymonth>=202303),]%>%
+#   rename(day_Mar = online_days)
+day_Mar = days_new %>%
+  filter((inventorymonth == paste(current_year, "03", sep = "")) | (inventorymonth == paste(current_year - 1, "03", sep = ""))) %>%
+  rename(day_Mar = online_days)
+# day_Mar = OH_2023_Mar%>%
+#   rename(day_Mar = Mar_OH)%>%
+#   filter(day_Mar != 0)
+# day_Apr = days_new[which(days_new$inventorymonth<=202304 & days_new$inventorymonth>=202304),]%>%
+#   rename(day_Apr = online_days)
+day_Apr = days_new %>%
+  filter((inventorymonth == paste(current_year, "04", sep = "")) | (inventorymonth == paste(current_year - 1, "04", sep = ""))) %>%
+  rename(day_Apr = online_days)
+# day_Apr = OH_2023_Apr%>%
+#   rename(day_Apr = Apr_OH)%>%
+#   filter(day_Apr != 0)
+# day_May = days_new[which(days_new$inventorymonth<=202305 & days_new$inventorymonth>=202305),]%>%
+#   rename(day_May = online_days)
+day_May = days_new %>%
+  filter((inventorymonth == paste(current_year, "05", sep = "")) | (inventorymonth == paste(current_year - 1, "05", sep = ""))) %>%
+  rename(day_May = online_days)
+# day_May = OH_2023_May%>%
+#   rename(day_May = May_OH)%>%
+#   filter(day_May != 0)
+# day_Jun = days_new[which(days_new$inventorymonth<=202306 & days_new$inventorymonth>=202306),]%>%
+#   rename(day_Jun = online_days)
+day_Jun = days_new %>%
+  filter((inventorymonth == paste(current_year, "06", sep = "")) | (inventorymonth == paste(current_year - 1, "06", sep = ""))) %>%
+  rename(day_Jun = online_days)
+# day_Jun = OH_2023_Jun%>%
+#   rename(day_Jun = Jun_OH)%>%
+#   filter(day_Jun != 0)
+# day_Jul = days_new[which(days_new$inventorymonth<=202307 & days_new$inventorymonth>=202307),]%>%
+#   rename(day_Jul = online_days)
+day_Jul = days_new %>%
+  filter((inventorymonth == paste(current_year, "07", sep = "")) | (inventorymonth == paste(current_year - 1, "07", sep = ""))) %>%
+  rename(day_Jul = online_days)
+# day_Jul = OH_2023_Jul%>%
+#   rename(day_Jul = Jul_OH)%>%
+#   filter(day_Jul != 0)
+# day_Aug = days_new[which(days_new$inventorymonth<=202308 & days_new$inventorymonth>=202308),]%>%
+#   rename(day_Aug = online_days)
+day_Aug = days_new %>%
+  filter((inventorymonth == paste(current_year, "08", sep = "")) | (inventorymonth == paste(current_year - 1, "08", sep = ""))) %>%
+  rename(day_Aug = online_days)
+# day_Aug = OH_2023_Aug%>%
+#   rename(day_Aug = Aug_OH)%>%
+#   filter(day_Aug != 0)
+# day_Sep = days_new[which(days_new$inventorymonth<=202309 & days_new$inventorymonth>=202309),]%>%
+#   rename(day_Sep = online_days)
+day_Sep = days_new %>%
+  filter((inventorymonth == paste(current_year, "09", sep = "")) | (inventorymonth == paste(current_year - 1, "09", sep = ""))) %>%
+  rename(day_Sep = online_days)
+# day_Sep1 = OH_2023_Sep%>%
+#   rename(day_Sep = Sep_OH)%>%
+#   filter(day_Sep != 0)
+# day_Oct = days_new[which(days_new$inventorymonth<=202210 & days_new$inventorymonth>=202210),]%>%
+#   rename(day_Oct = online_days)
+day_Oct = days_new %>%
+  filter((inventorymonth == paste(current_year, "10", sep = "")) | (inventorymonth == paste(current_year - 1, "10", sep = ""))) %>%
+  rename(day_Oct = online_days)
+# day_Oct = OH_2023_Oct%>%
+#   rename(day_Oct = Oct_OH)%>%
+#   filter(day_Oct != 0)
+# day_Nov = days_new[which(days_new$inventorymonth<=202211 & days_new$inventorymonth>=202211),]%>%
+#   rename(day_Nov = online_days)
+day_Nov = days_new %>%
+  filter((inventorymonth == paste(current_year, "11", sep = "")) | (inventorymonth == paste(current_year - 1, "11", sep = ""))) %>%
+  rename(day_Nov = online_days)
+# day_Nov = OH_2023_Nov%>%
+#   rename(day_Nov = Nov_OH)%>%
+#   filter(day_Nov != 0)
+# day_Dec1 = days_new[which(days_new$inventorymonth<=202212 & days_new$inventorymonth>=202212),]%>%
+#   rename(day_Dec = online_days)
+day_Dec = days_new %>%
+  filter((inventorymonth == paste(current_year, "12", sep = "")) | (inventorymonth == paste(current_year - 1, "12", sep = ""))) %>%
+  rename(day_Dec = online_days)
+# day_Dec = OH_2023_Dec%>%
+#   rename(day_Dec = Dec_OH)%>%
+#   filter(day_Dec != 0)
+
+if(!any(days_new$online_days[which(days_new$inventorymonth==filterdatemax)]>29)){
+  month_abbrev <- format(Sys.Date()-months(1), "%b")
+  df<-OH_imp%>%
+    rename(!!paste0("day_", month_abbrev) := OH)%>%
+    filter(.[[3]] != 0)
+  assign(paste0("day_", format(Sys.Date()-months(1), "%b")), df)
+}
+
+df=day_Jan%>%
+  full_join(day_Feb, by=c("merchantid", "skuorder"))%>%
+  full_join(day_Mar, by=c("merchantid", "skuorder"))%>%
+  full_join(day_Apr, by=c("merchantid", "skuorder"))%>%
+  full_join(day_May, by=c("merchantid", "skuorder"))%>%
+  full_join(day_Jun, by=c("merchantid", "skuorder"))%>%
+  full_join(day_Jul, by=c("merchantid", "skuorder"))%>%
+  full_join(day_Aug, by=c("merchantid", "skuorder"))%>%
+  full_join(day_Sep, by=c("merchantid", "skuorder"))%>%
+  full_join(day_Oct, by=c("merchantid", "skuorder"))%>%
+  full_join(day_Nov, by=c("merchantid", "skuorder"))%>%
+  full_join(day_Dec, by=c("merchantid", "skuorder"))%>%
+  left_join(skutomastersku, by=c("skuorder" = "SKU", "merchantid" = "Merchant Name"))
+df$Category1 = coalesce(df[["Category1.x"]], df[["Category1.y"]], df[["Category1.x.x"]], df[["Category1.y.y"]],df[["Category1.x.x.x"]], df[["Category1.y.y.y"]],df[["Category1.x.x.x.x"]], df[["Category1.y.y.y.y"]], df[["Category1.x.x.x.x.x"]],  df[["Category1.y.y.y.y.y"]],df[["Category1.x.x.x.x.x.x"]], df[["Category1.y.y.y.y.y.y"]])
+df<-df%>%
+  select(merchantid, Category1, skuorder, day_Jan,day_Feb,day_Mar,day_Apr,day_May,day_Jun,day_Jul,day_Aug,day_Sep,day_Oct,day_Nov,day_Dec)
+  
+```
+
+```{r}
+df_indoor = df[which(df$Category1=="INDOOR"),]
+df_indoor[is.na(df_indoor)]<-0
+
+
+# Define the weights for each month
+weights <- c(Jul = 0.0071, Aug = 0.0099, Sep = 0.0138, Oct = 0.0194, Nov = 0.0271, Dec = 0.0379, Jan = 0.0531, Feb = 0.0744, Mar = 0.1041, Apr = 0.1511, May = 0.2094, Jun = 0.2927)
+
+# Get the current month
+current_month <- format(Sys.Date(), "%b")
+
+# Get the order of the months starting from the current month
+ordered_months <- c(names(weights)[match(current_month, names(weights)):length(weights)], names(weights)[1:(match(current_month, names(weights))-1)])
+
+# Assign the largest value to the most recent month (June)
+weights[ordered_months] <- c(sort(weights)[-length(weights)], max(weights))
+
+for (month in names(weights)) {
+  assign(month, as.numeric(weights[month]))
+}
+
+# Jul = 0.0071
+# Aug = 0.0099
+# Sep = 0.0138
+# Oct = 0.0194
+# Nov = 0.0271
+# Dec = 0.0379
+# Jan = 0.0531
+# Feb = 0.0744
+# Mar = 0.1041
+# Apr = 0.1511
+# May = 0.2094
+# Jun = 0.2927
+
+current_month <- format(Sys.Date(), "%b")
+last_three_months <- c(format(Sys.Date() - months(1), "%b"), format(Sys.Date() - months(2), "%b"), format(Sys.Date() - months(3), "%b"))
+
+current_month_num <- as.numeric(format(Sys.Date(), "%m"))
+month_names <- c('Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec')
+recent_months_4 <- ((current_month_num - 1 - 1):(current_month_num - 1 - 6)) %% 12 + 1
+variable_names_4 <- sprintf('%sto%s', month_names[recent_months_4], month_names[(recent_months_4 + 3 - 1) %% 12 + 1])
+
+recent_months_3 <- ((current_month_num - 1 - 1):(current_month_num - 1 - 5)) %% 12 + 1
+variable_names_3 <- sprintf('%sto%s', month_names[recent_months_3], month_names[(recent_months_3 + 2 - 1) %% 12 + 1])
+
+recent_months_2 <- ((current_month_num - 1 - 1):(current_month_num - 1 - 4)) %% 12 + 1
+variable_names_2 <- sprintf('%sto%s', month_names[recent_months_2], month_names[(recent_months_2 + 1 - 1) %% 12 + 1])
+
+
+df_indoor_4<-df_indoor%>%
+  mutate(JantoApr = ifelse((day_Jan>=15&day_Feb>=15&day_Mar>=15&day_Apr>=15),1,0),
+         #JantoApr = 0,
+         FebtoMay = ifelse((day_Feb>=15&day_Mar>=15&day_Apr>=15&day_May>=15),1,0),
+         #FebtoMay = 0,
+         MartoJun = ifelse((day_Mar>=15&day_Apr>=15&day_May>=15&day_Jun>=15),1,0),
+         #MartoJun = 0,
+         AprtoJul = ifelse((day_Apr>=15&day_May>=15&day_Jun>=15&day_Jul>=15),1,0),
+         #AprtoJul = 0,
+         MaytoAug = ifelse((day_May>=15&day_Jun>=15&day_Jul>=15&day_Aug>=15),1,0),
+         #MaytoAug = 0,
+         JuntoSep = ifelse((day_Jun>=15&day_Jul>=15&day_Aug>=15&day_Sep>=15),1,0),
+         #JuntoSep = 0,
+         JultoOct = ifelse((day_Jul>=15&day_Aug>=15&day_Sep>=15&day_Oct>=15),1,0),
+         #JultoOct = 0,
+         AugtoNov = ifelse((day_Aug>=15&day_Sep>=15&day_Oct>=15&day_Nov>=15),1,0),
+         #AugtoNov = 0,
+         SeptoDec = ifelse((day_Sep>=15&day_Oct>=15&day_Nov>=15&day_Dec>=15),1,0),
+         #SeptoDec = 0,
+         OcttoJan = ifelse((day_Oct>=15&day_Nov>=15&day_Dec>=15&day_Jan>=15),1,0),
+         #OcttoJan = 0,
+         NovtoFeb = ifelse((day_Nov>=15&day_Dec>=15&day_Jan>=15&day_Feb>=15),1,0),
+         #NovtoFeb = 0,
+         DectoMar = ifelse((day_Dec>=15&day_Jan>=15&day_Feb>=15&day_Mar>=15),1,0)
+         #DectoMar = 0
+         )%>%
+  mutate(JantoMar = ifelse(day_Jan>=15&day_Feb>=15&day_Mar>=15,1,0),
+         #JantoMar = 0,
+         FebtoApr = ifelse(day_Feb>=15&day_Mar>=15&day_Apr>=15,1,0),
+         #FebtoApr = 0,
+         MartoMay = ifelse(day_Mar>=15&day_Apr>=15&day_May>=15,1,0),
+         #MartoMay = 0,
+         AprtoJun = ifelse(day_Apr>=15&day_May>=15&day_Jun>=15,1,0),
+         #AprtoJun = 0,
+         MaytoJul = ifelse(day_May>=15&day_Jun>=15&day_Jul>=15,1,0),
+         #MaytoJul = 0,
+         JuntoAug = ifelse(day_Jun>=15&day_Jul>=15&day_Aug>=15,1,0),
+         #JuntoAug = 0,
+         JultoSep = ifelse(day_Jul>=15&day_Aug>=15&day_Sep>=15,1,0),
+         #JultoSep = 0,
+         AugtoOct = ifelse(day_Aug>=15&day_Sep>=15&day_Oct>=15,1,0),
+         #AugtoOct = 0,
+         SeptoNov = ifelse(day_Sep>=15&day_Oct>=15&day_Nov>=15,1,0),
+         #SeptoNov = 0,
+         OcttoDec = ifelse(day_Oct>=15&day_Nov>=15&day_Dec>=15,1,0),
+         #OcttoDec = 0,
+         NovtoJan = ifelse(day_Jan>=15&day_Nov>=15&day_Dec>=15,1,0),
+         #NovtoJan = 0,
+         DectoFeb = ifelse(day_Dec>=15&day_Jan>=15&day_Feb>=15,1,0)
+         #DectoFeb = 0
+         )%>%
+  mutate(JantoFeb = ifelse(day_Jan>=15&day_Feb>=15,1,0),
+         #JantoFeb = 0,
+         FebtoMar = ifelse(day_Mar>=15&day_Feb>=15,1,0),
+         #FebtoMar = 0,
+         MartoApr = ifelse(day_Mar>=15&day_Apr>=15,1,0),
+         #MartoApr = 0,
+         AprtoMay = ifelse(day_Apr>=15&day_May>=15,1,0),
+         #AprtoMay = 0,
+         MaytoJun = ifelse(day_May>=15&day_Jun>=15,1,0),
+         #MaytoJun = 0,
+         JuntoJul = ifelse(day_Jun>=15&day_Jul>=15,1,0),
+         #JuntoJul = 0,
+         JultoAug = ifelse(day_Jul>=15&day_Aug>=15,1,0),
+         #JultoAug = 0,
+         AugtoSep = ifelse(day_Aug>=15&day_Sep>=15,1,0),
+         #AugtoSep = 0,
+         SeptoOct = ifelse(day_Sep>=15&day_Oct>=15,1,0),
+         #SeptoOct = 0,
+         OcttoNov = ifelse(day_Oct>=15&day_Nov>=15,1,0),
+         #OcttoNov = 0,
+         NovtoDec = ifelse(day_Nov>=15&day_Dec>=15,1,0),
+         #NovtoDec = 0,
+         DectoJan = ifelse(day_Dec>=15&day_Jan>=15,1,0)
+         #DectoJan = 0
+         )%>% 
+  mutate(across(all_of(variable_names_4), ~ 0))%>%
+  mutate(across(all_of(variable_names_3), ~ 0))%>%
+  mutate(across(all_of(variable_names_2), ~ 0))%>%
+  mutate(
+    `OH_0` = ifelse(day_Jan + day_Feb + day_Mar + day_Apr + day_May + day_Jun + day_Jul + day_Aug + day_Sep + day_Oct + day_Nov + day_Dec == 0, 1, 0),
+    current_month = month(Sys.Date()),
+    normal = case_when(
+      current_month == 1 & (day_Dec >= 15 | day_Nov >= 15 | day_Oct >= 15) ~ 1,
+      current_month == 2 & (day_Jan >= 15 | day_Dec >= 15 | day_Nov >= 15) ~ 1,
+      current_month == 3 & (day_Feb >= 15 | day_Jan >= 15 | day_Dec >= 15) ~ 1,
+      current_month == 4 & (day_Mar >= 15 | day_Feb >= 15 | day_Jan >= 15) ~ 1,
+      current_month == 5 & (day_Apr >= 15 | day_Mar >= 15 | day_Feb >= 15) ~ 1,
+      current_month == 6 & (day_May >= 15 | day_Apr >= 15 | day_Mar >= 15) ~ 1,
+      current_month == 7 & (day_Jun >= 15 | day_May >= 15 | day_Apr >= 15) ~ 1,
+      current_month == 8 & (day_Jul >= 15 | day_Jun >= 15 | day_May >= 15) ~ 1,
+      current_month == 9 & (day_Aug >= 15 | day_Jul >= 15 | day_Jun >= 15) ~ 1,
+      current_month == 10 & (day_Sep >= 15 | day_Aug >= 15 | day_Jul >= 15) ~ 1,
+      current_month == 11 & (day_Oct >= 15 | day_Sep >= 15 | day_Aug >= 15) ~ 1,
+      current_month == 12 & (day_Nov >= 15 | day_Oct >= 15 | day_Sep >= 15) ~ 1,
+      TRUE ~ 0
+    ),
+    Pushback_with_4 = ifelse(normal == 0, ifelse(JantoApr+FebtoMay+MartoJun+AprtoJul+MaytoAug+JuntoSep+JultoOct+AugtoNov+SeptoDec+OcttoJan+NovtoFeb+DectoMar!=0, 1,0),0),
+    Pushback_with_3 = ifelse(Pushback_with_4==0&normal == 0, ifelse(JantoMar+FebtoApr+MartoMay+AprtoJun+MaytoJul+JuntoAug+JultoSep+AugtoOct+SeptoNov+OcttoDec+NovtoJan+DectoFeb!=0,1,0),0),
+    Pushback_with_2 = ifelse(Pushback_with_4==0&Pushback_with_3==0&normal == 0, ifelse(MartoApr+AprtoMay+MaytoJun+JuntoJul+JultoAug+AugtoSep+SeptoOct+OcttoNov+NovtoDec+DectoJan+JantoFeb+FebtoMar!=0,1,0),0),
+    Pushback_with_1 = ifelse(Pushback_with_4==0&Pushback_with_3==0&Pushback_with_2==0&normal == 0, ifelse(day_Oct>=15|day_Nov>=15|day_Dec>=15|day_Jan>=15|day_Feb>=15|day_Mar>=15|day_Apr>=15|day_May>=15|day_Jun>=15|day_Jul>=15|day_Aug>=15|day_Sep>=15,1,0),0))%>%
+  mutate(
+        Jan = ifelse(Pushback_with_4 == 1, ifelse(SeptoDec == 1, 0, ifelse(AugtoNov == 1, 0, ifelse(JultoOct == 1, 0, ifelse(JuntoSep == 1, 0, ifelse(MaytoAug == 1, 0, ifelse(AprtoJul == 1, 0, ifelse(MartoJun == 1, 0, ifelse(FebtoMay == 1, 0, ifelse(JantoApr == 1, 0.1375, ifelse(DectoMar == 1, 0.1995, ifelse(NovtoFeb == 1, 0.2765, ifelse(OcttoJan == 1, 0.3865, Jan)))))))))))),Jan),
+        Feb = ifelse(Pushback_with_4 == 1, ifelse(SeptoDec == 1, 0, ifelse(AugtoNov == 1, 0, ifelse(JultoOct == 1, 0, ifelse(JuntoSep == 1, 0, ifelse(MaytoAug == 1, 0, ifelse(AprtoJul == 1, 0, ifelse(MartoJun == 1, 0, ifelse(FebtoMay == 1, 0.1375, ifelse(JantoApr == 1, 0.1995, ifelse(DectoMar == 1, 0.2765, ifelse(NovtoFeb == 1, 0.3865, ifelse(OcttoJan == 1, 0, Feb)))))))))))),Feb),
+        Mar = ifelse(Pushback_with_4 == 1, ifelse(SeptoDec == 1, 0, ifelse(AugtoNov == 1, 0, ifelse(JultoOct == 1, 0, ifelse(JuntoSep == 1, 0, ifelse(MaytoAug == 1, 0, ifelse(AprtoJul == 1, 0, ifelse(MartoJun == 1, 0.1375, ifelse(FebtoMay == 1, 0.1995, ifelse(JantoApr == 1, 0.2765, ifelse(DectoMar == 1, 0.3865, ifelse(NovtoFeb == 1, 0, ifelse(OcttoJan == 1, 0, Mar)))))))))))),Mar),
+        Apr = ifelse(Pushback_with_4 == 1, ifelse(SeptoDec == 1, 0, ifelse(AugtoNov == 1, 0, ifelse(JultoOct == 1, 0, ifelse(JuntoSep == 1, 0, ifelse(MaytoAug == 1, 0, ifelse(AprtoJul == 1, 0.1375, ifelse(MartoJun == 1, 0.1995, ifelse(FebtoMay == 1, 0.2765, ifelse(JantoApr == 1, 0.3865, ifelse(DectoMar == 1, 0, ifelse(NovtoFeb == 1, 0, ifelse(OcttoJan == 1, 0, Apr)))))))))))),Apr),
+        May = ifelse(Pushback_with_4 == 1, ifelse(SeptoDec == 1, 0, ifelse(AugtoNov == 1, 0, ifelse(JultoOct == 1, 0, ifelse(JuntoSep == 1, 0, ifelse(MaytoAug == 1, 0.1375, ifelse(AprtoJul == 1, 0.1995, ifelse(MartoJun == 1, 0.2765, ifelse(FebtoMay == 1, 0.3865, ifelse(JantoApr == 1, 0, ifelse(DectoMar == 1, 0, ifelse(NovtoFeb == 1, 0, ifelse(OcttoJan == 1, 0, May)))))))))))),May),
+        Jun = ifelse(Pushback_with_4 == 1, ifelse(SeptoDec == 1, 0, ifelse(AugtoNov == 1, 0, ifelse(JultoOct == 1, 0, ifelse(JuntoSep == 1, 0.1375, ifelse(MaytoAug == 1, 0.1995, ifelse(AprtoJul == 1, 0.2765, ifelse(MartoJun == 1, 0.3865, ifelse(FebtoMay == 1, 0, ifelse(JantoApr == 1, 0, ifelse(DectoMar == 1, 0, ifelse(NovtoFeb == 1, 0, ifelse(OcttoJan == 1, 0, Jun)))))))))))),Jun),
+        Jul = ifelse(Pushback_with_4 == 1, ifelse(SeptoDec == 1, 0, ifelse(AugtoNov == 1, 0, ifelse(JultoOct == 1, 0.1375, ifelse(JuntoSep == 1, 0.1995, ifelse(MaytoAug == 1, 0.2765, ifelse(AprtoJul == 1, 0.3865, ifelse(MartoJun == 1, 0, ifelse(FebtoMay == 1, 0, ifelse(JantoApr == 1, 0, ifelse(DectoMar == 1, 0, ifelse(NovtoFeb == 1, 0, ifelse(OcttoJan == 1, 0, Jul)))))))))))),Jul),
+        Aug = ifelse(Pushback_with_4 == 1, ifelse(SeptoDec == 1, 0, ifelse(AugtoNov == 1, 0.1375, ifelse(JultoOct == 1, 0.1995, ifelse(JuntoSep == 1, 0.2765, ifelse(MaytoAug == 1, 0.3865, ifelse(AprtoJul == 1, 0, ifelse(MartoJun == 1, 0, ifelse(FebtoMay == 1, 0, ifelse(JantoApr == 1, 0, ifelse(DectoMar == 1, 0, ifelse(NovtoFeb == 1, 0, ifelse(OcttoJan == 1, 0, Aug)))))))))))),Aug),
+        Sep = ifelse(Pushback_with_4 == 1, ifelse(SeptoDec == 1, 0.1375, ifelse(AugtoNov == 1, 0.1995, ifelse(JultoOct == 1, 0.2765, ifelse(JuntoSep == 1, 0.3865, ifelse(MaytoAug == 1, 0, ifelse(AprtoJul == 1, 0, ifelse(MartoJun == 1, 0, ifelse(FebtoMay == 1, 0, ifelse(JantoApr == 1, 0, ifelse(DectoMar == 1, 0, ifelse(NovtoFeb == 1, 0, ifelse(OcttoJan == 1, 0, Sep)))))))))))),Sep),
+        Oct = ifelse(Pushback_with_4 == 1, ifelse(SeptoDec == 1, 0.1995, ifelse(AugtoNov == 1, 0.2765, ifelse(JultoOct == 1, 0.3865, ifelse(JuntoSep == 1, 0, ifelse(MaytoAug == 1, 0, ifelse(AprtoJul == 1, 0, ifelse(MartoJun == 1, 0, ifelse(FebtoMay == 1, 0, ifelse(JantoApr == 1, 0, ifelse(DectoMar == 1, 0, ifelse(NovtoFeb == 1, 0, ifelse(OcttoJan == 1, 0.1375, Oct)))))))))))),Oct),
+        Nov = ifelse(Pushback_with_4 == 1, ifelse(SeptoDec == 1, 0.2765, ifelse(AugtoNov == 1, 0.3865, ifelse(JultoOct == 1, 0, ifelse(JuntoSep == 1, 0, ifelse(MaytoAug == 1, 0, ifelse(AprtoJul == 1, 0, ifelse(MartoJun == 1, 0, ifelse(FebtoMay == 1, 0, ifelse(JantoApr == 1, 0, ifelse(DectoMar == 1, 0, ifelse(NovtoFeb == 1, 0.1375, ifelse(OcttoJan == 1, 0.1995, Nov)))))))))))),Nov),
+        Dec = ifelse(Pushback_with_4 == 1, ifelse(SeptoDec == 1, 0.3865, ifelse(AugtoNov == 1, 0, ifelse(JultoOct == 1, 0, ifelse(JuntoSep == 1, 0, ifelse(MaytoAug == 1, 0, ifelse(AprtoJul == 1, 0, ifelse(MartoJun == 1, 0, ifelse(FebtoMay == 1, 0, ifelse(JantoApr == 1, 0, ifelse(DectoMar == 1, 0.1375, ifelse(NovtoFeb == 1, 0.1995, ifelse(OcttoJan == 1, 0.2765, Dec)))))))))))),Dec),
+        Jan = ifelse(Pushback_with_4 == 1 & (month(today())-1==1 |month(today())-2==1 |month(today())-3==1 ), 0, Jan),
+        Feb = ifelse(Pushback_with_4 == 1 & (month(today())-1==2 |month(today())-2==2 |month(today())-3==2 ), 0, Feb),
+        Mar = ifelse(Pushback_with_4 == 1 & (month(today())-1==3 |month(today())-2==3 |month(today())-3==3 ), 0, Mar),
+        Apr = ifelse(Pushback_with_4 == 1 & (month(today())-1==4 |month(today())-2==4 |month(today())-3==4 ), 0, Apr),
+        May = ifelse(Pushback_with_4 == 1 & (month(today())-1==5 |month(today())-2==5 |month(today())-3==5 ), 0, May),
+        Jun = ifelse(Pushback_with_4 == 1 & (month(today())-1==6 |month(today())-2==6 |month(today())-3==6 ), 0, Jun),
+        Jul = ifelse(Pushback_with_4 == 1 & (month(today())-1==7 |month(today())-2==7 |month(today())-3==7 ), 0, Jul),
+        Aug = ifelse(Pushback_with_4 == 1 & (month(today())-1==8 |month(today())-2==8 |month(today())-3==8 ), 0, Aug),
+        Sep = ifelse(Pushback_with_4 == 1 & (month(today())-1==9 |month(today())-2==9 |month(today())-3==9 ), 0, Sep),
+        Oct = ifelse(Pushback_with_4 == 1 & (month(today())-1==10|month(today())-2==10|month(today())-3==10), 0, Oct),
+        Nov = ifelse(Pushback_with_4 == 1 & (month(today())-1==11|month(today())-2==11|month(today())-3==11), 0, Nov),
+        Dec = ifelse(Pushback_with_4 == 1 & (month(today())-1==12|month(today())-2==12|month(today())-3==12), 0, Dec)
+        #Apr = ifelse(Pushback_with_4 == 1, 0, Apr),
+        #May = ifelse(Pushback_with_4 == 1, 0, May),
+        #Jun = ifelse(Pushback_with_4 == 1, 0, Jun)
+        )%>%
+  mutate(
+        Jan = ifelse(Pushback_with_3 == 1,ifelse(SeptoNov == 1, 0, ifelse(AugtoOct == 1, 0, ifelse(JultoSep == 1, 0, ifelse(JuntoAug == 1, 0, ifelse(MaytoJul == 1, 0, ifelse(AprtoJun == 1, 0, ifelse(MartoMay == 1, 0, ifelse(FebtoApr == 1, 0, ifelse(JantoMar == 1, 0.2313, ifelse(DectoFeb == 1, 0.3206, ifelse(NovtoJan == 1, 0.4481, ifelse(OcttoDec == 1, 0, Jan)))))))))))),Jan),
+        Feb = ifelse(Pushback_with_3 == 1,ifelse(SeptoNov == 1, 0, ifelse(AugtoOct == 1, 0, ifelse(JultoSep == 1, 0, ifelse(JuntoAug == 1, 0, ifelse(MaytoJul == 1, 0, ifelse(AprtoJun == 1, 0, ifelse(MartoMay == 1, 0, ifelse(FebtoApr == 1, 0.2313, ifelse(JantoMar == 1, 0.3206, ifelse(DectoFeb == 1, 0.4481, ifelse(NovtoJan == 1, 0, ifelse(OcttoDec == 1, 0, Feb)))))))))))),Feb),
+        Mar = ifelse(Pushback_with_3 == 1,ifelse(SeptoNov == 1, 0, ifelse(AugtoOct == 1, 0, ifelse(JultoSep == 1, 0, ifelse(JuntoAug == 1, 0, ifelse(MaytoJul == 1, 0, ifelse(AprtoJun == 1, 0, ifelse(MartoMay == 1, 0.2313, ifelse(FebtoApr == 1, 0.3206, ifelse(JantoMar == 1, 0.4481, ifelse(DectoFeb == 1, 0, ifelse(NovtoJan == 1, 0, ifelse(OcttoDec == 1, 0, Mar)))))))))))),Mar),
+        Apr = ifelse(Pushback_with_3 == 1,ifelse(SeptoNov == 1, 0, ifelse(AugtoOct == 1, 0, ifelse(JultoSep == 1, 0, ifelse(JuntoAug == 1, 0, ifelse(MaytoJul == 1, 0, ifelse(AprtoJun == 1, 0.2313, ifelse(MartoMay == 1, 0.3206, ifelse(FebtoApr == 1, 0.4481, ifelse(JantoMar == 1, 0, ifelse(DectoFeb == 1, 0, ifelse(NovtoJan == 1, 0, ifelse(OcttoDec == 1, 0, Apr)))))))))))),Apr),
+        May = ifelse(Pushback_with_3 == 1,ifelse(SeptoNov == 1, 0, ifelse(AugtoOct == 1, 0, ifelse(JultoSep == 1, 0, ifelse(JuntoAug == 1, 0, ifelse(MaytoJul == 1, 0.2313, ifelse(AprtoJun == 1, 0.3206, ifelse(MartoMay == 1, 0.4481, ifelse(FebtoApr == 1, 0, ifelse(JantoMar == 1, 0, ifelse(DectoFeb == 1, 0, ifelse(NovtoJan == 1, 0, ifelse(OcttoDec == 1, 0, May)))))))))))),May),
+        Jun = ifelse(Pushback_with_3 == 1,ifelse(SeptoNov == 1, 0, ifelse(AugtoOct == 1, 0, ifelse(JultoSep == 1, 0, ifelse(JuntoAug == 1, 0.2313, ifelse(MaytoJul == 1, 0.3206, ifelse(AprtoJun == 1, 0.4481, ifelse(MartoMay == 1, 0, ifelse(FebtoApr == 1, 0, ifelse(JantoMar == 1, 0, ifelse(DectoFeb == 1, 0, ifelse(NovtoJan == 1, 0, ifelse(OcttoDec == 1, 0, Jun)))))))))))),Jun),
+        Jul = ifelse(Pushback_with_3 == 1,ifelse(SeptoNov == 1, 0, ifelse(AugtoOct == 1, 0, ifelse(JultoSep == 1, 0.2313, ifelse(JuntoAug == 1, 0.3206, ifelse(MaytoJul == 1, 0.4481, ifelse(AprtoJun == 1, 0, ifelse(MartoMay == 1, 0, ifelse(FebtoApr == 1, 0, ifelse(JantoMar == 1, 0, ifelse(DectoFeb == 1, 0, ifelse(NovtoJan == 1, 0, ifelse(OcttoDec == 1, 0, Jul)))))))))))),Jul),
+        Aug = ifelse(Pushback_with_3 == 1,ifelse(SeptoNov == 1, 0, ifelse(AugtoOct == 1, 0.2313, ifelse(JultoSep == 1, 0.3206, ifelse(JuntoAug == 1, 0.4481, ifelse(MaytoJul == 1, 0, ifelse(AprtoJun == 1, 0, ifelse(MartoMay == 1, 0, ifelse(FebtoApr == 1, 0, ifelse(JantoMar == 1, 0, ifelse(DectoFeb == 1, 0, ifelse(NovtoJan == 1, 0, ifelse(OcttoDec == 1, 0, Aug)))))))))))),Aug),
+        Sep = ifelse(Pushback_with_3 == 1,ifelse(SeptoNov == 1, 0.2313, ifelse(AugtoOct == 1, 0.3206, ifelse(JultoSep == 1, 0.4481, ifelse(JuntoAug == 1, 0, ifelse(MaytoJul == 1, 0, ifelse(AprtoJun == 1, 0, ifelse(MartoMay == 1, 0, ifelse(FebtoApr == 1, 0, ifelse(JantoMar == 1, 0, ifelse(DectoFeb == 1, 0, ifelse(NovtoJan == 1, 0, ifelse(OcttoDec == 1, 0, Sep)))))))))))),Sep),
+        Oct = ifelse(Pushback_with_3 == 1,ifelse(SeptoNov == 1, 0.3206, ifelse(AugtoOct == 1, 0.4481, ifelse(JultoSep == 1, 0, ifelse(JuntoAug == 1, 0, ifelse(MaytoJul == 1, 0, ifelse(AprtoJun == 1, 0, ifelse(MartoMay == 1, 0, ifelse(FebtoApr == 1, 0, ifelse(JantoMar == 1, 0, ifelse(DectoFeb == 1, 0, ifelse(NovtoJan == 1, 0, ifelse(OcttoDec == 1, 0.2313, Oct)))))))))))),Oct),
+        Nov = ifelse(Pushback_with_3 == 1,ifelse(SeptoNov == 1, 0.4481, ifelse(AugtoOct == 1, 0, ifelse(JultoSep == 1, 0, ifelse(JuntoAug == 1, 0, ifelse(MaytoJul == 1, 0, ifelse(AprtoJun == 1, 0, ifelse(MartoMay == 1, 0, ifelse(FebtoApr == 1, 0, ifelse(JantoMar == 1, 0, ifelse(DectoFeb == 1, 0, ifelse(NovtoJan == 1, 0.2313, ifelse(OcttoDec == 1, 0.3206, Nov)))))))))))),Nov),
+        Dec = ifelse(Pushback_with_3 == 1,ifelse(SeptoNov == 1, 0, ifelse(AugtoOct == 1, 0, ifelse(JultoSep == 1, 0, ifelse(JuntoAug == 1, 0, ifelse(MaytoJul == 1, 0, ifelse(AprtoJun == 1, 0, ifelse(MartoMay == 1, 0, ifelse(FebtoApr == 1, 0, ifelse(JantoMar == 1, 0, ifelse(DectoFeb == 1, 0.2313, ifelse(NovtoJan == 1, 0.3206, ifelse(OcttoDec == 1, 0.4481, Dec)))))))))))),Dec),
+        Jan = ifelse(Pushback_with_3 == 1 & (month(today())-1==1 |month(today())-2==1 |month(today())-3==1 ), 0, Jan),
+        Feb = ifelse(Pushback_with_3 == 1 & (month(today())-1==2 |month(today())-2==2 |month(today())-3==2 ), 0, Feb),
+        Mar = ifelse(Pushback_with_3 == 1 & (month(today())-1==3 |month(today())-2==3 |month(today())-3==3 ), 0, Mar),
+        Apr = ifelse(Pushback_with_3 == 1 & (month(today())-1==4 |month(today())-2==4 |month(today())-3==4 ), 0, Apr),
+        May = ifelse(Pushback_with_3 == 1 & (month(today())-1==5 |month(today())-2==5 |month(today())-3==5 ), 0, May),
+        Jun = ifelse(Pushback_with_3 == 1 & (month(today())-1==6 |month(today())-2==6 |month(today())-3==6 ), 0, Jun),
+        Jul = ifelse(Pushback_with_3 == 1 & (month(today())-1==7 |month(today())-2==7 |month(today())-3==7 ), 0, Jul),
+        Aug = ifelse(Pushback_with_3 == 1 & (month(today())-1==8 |month(today())-2==8 |month(today())-3==8 ), 0, Aug),
+        Sep = ifelse(Pushback_with_3 == 1 & (month(today())-1==9 |month(today())-2==9 |month(today())-3==9 ), 0, Sep),
+        Oct = ifelse(Pushback_with_3 == 1 & (month(today())-1==10|month(today())-2==10|month(today())-3==10), 0, Oct),
+        Nov = ifelse(Pushback_with_3 == 1 & (month(today())-1==11|month(today())-2==11|month(today())-3==11), 0, Nov),
+        Dec = ifelse(Pushback_with_3 == 1 & (month(today())-1==12|month(today())-2==12|month(today())-3==12), 0, Dec)
+        #Apr = ifelse(Pushback_with_3 == 1, 0, Apr),
+        #May = ifelse(Pushback_with_3 == 1, 0, May),
+        #Jun = ifelse(Pushback_with_3 == 1, 0, Jun)
+        )%>%
+  mutate(
+        Jan = ifelse(Pushback_with_2 == 1,ifelse(SeptoOct == 1,0, ifelse(AugtoSep == 1, 0, ifelse(JultoAug == 1, 0, ifelse(JuntoJul == 1, 0, ifelse(MaytoJun == 1, 0, ifelse(AprtoMay == 1, 0, ifelse(MartoApr == 1, 0, ifelse(FebtoMar == 1, 0, ifelse(JantoFeb == 1, 0.4, ifelse(DectoJan == 1, 0.6, ifelse(NovtoDec == 1,0, ifelse(OcttoNov == 1, 0, Jan)))))))))))),Jan),
+        Feb = ifelse(Pushback_with_2 == 1,ifelse(SeptoOct == 1,0, ifelse(AugtoSep == 1, 0, ifelse(JultoAug == 1, 0, ifelse(JuntoJul == 1, 0, ifelse(MaytoJun == 1, 0, ifelse(AprtoMay == 1, 0, ifelse(MartoApr == 1, 0, ifelse(FebtoMar == 1, 0.4, ifelse(JantoFeb == 1, 0.6, ifelse(DectoJan == 1, 0, ifelse(NovtoDec == 1,0, ifelse(OcttoNov == 1, 0, Feb)))))))))))),Feb),
+        Mar = ifelse(Pushback_with_2 == 1,ifelse(SeptoOct == 1,0, ifelse(AugtoSep == 1, 0, ifelse(JultoAug == 1, 0, ifelse(JuntoJul == 1, 0, ifelse(MaytoJun == 1, 0, ifelse(AprtoMay == 1, 0, ifelse(MartoApr == 1, 0.4, ifelse(FebtoMar == 1, 0.6, ifelse(JantoFeb == 1, 0, ifelse(DectoJan == 1, 0, ifelse(NovtoDec == 1,0, ifelse(OcttoNov == 1, 0, Mar)))))))))))),Mar),
+        Apr = ifelse(Pushback_with_2 == 1,ifelse(SeptoOct == 1,0, ifelse(AugtoSep == 1, 0, ifelse(JultoAug == 1, 0, ifelse(JuntoJul == 1, 0, ifelse(MaytoJun == 1, 0, ifelse(AprtoMay == 1, 0.4, ifelse(MartoApr == 1, 0.6, ifelse(FebtoMar == 1, 0, ifelse(JantoFeb == 1, 0, ifelse(DectoJan == 1, 0, ifelse(NovtoDec == 1,0, ifelse(OcttoNov == 1, 0, Apr)))))))))))),Apr),
+        May = ifelse(Pushback_with_2 == 1,ifelse(SeptoOct == 1,0, ifelse(AugtoSep == 1, 0, ifelse(JultoAug == 1, 0, ifelse(JuntoJul == 1, 0, ifelse(MaytoJun == 1, 0.4, ifelse(AprtoMay == 1, 0.6, ifelse(MartoApr == 1, 0, ifelse(FebtoMar == 1, 0, ifelse(JantoFeb == 1, 0, ifelse(DectoJan == 1, 0, ifelse(NovtoDec == 1,0, ifelse(OcttoNov == 1, 0, May)))))))))))),May),
+        Jun = ifelse(Pushback_with_2 == 1,ifelse(SeptoOct == 1,0, ifelse(AugtoSep == 1, 0, ifelse(JultoAug == 1, 0, ifelse(JuntoJul == 1, 0.4, ifelse(MaytoJun == 1, 0.6, ifelse(AprtoMay == 1, 0, ifelse(MartoApr == 1, 0, ifelse(FebtoMar == 1, 0, ifelse(JantoFeb == 1, 0, ifelse(DectoJan == 1, 0, ifelse(NovtoDec == 1,0, ifelse(OcttoNov == 1, 0, Jun)))))))))))),Jun),
+        Jul = ifelse(Pushback_with_2 == 1,ifelse(SeptoOct == 1,0, ifelse(AugtoSep == 1, 0, ifelse(JultoAug == 1, 0.4, ifelse(JuntoJul == 1, 0.6, ifelse(MaytoJun == 1, 0, ifelse(AprtoMay == 1, 0, ifelse(MartoApr == 1, 0, ifelse(FebtoMar == 1, 0, ifelse(JantoFeb == 1, 0, ifelse(DectoJan == 1, 0, ifelse(NovtoDec == 1,0, ifelse(OcttoNov == 1, 0, Jul)))))))))))),Jul),
+        Aug = ifelse(Pushback_with_2 == 1,ifelse(SeptoOct == 1,0, ifelse(AugtoSep == 1, 0.4, ifelse(JultoAug == 1, 0.6, ifelse(JuntoJul == 1, 0, ifelse(MaytoJun == 1, 0, ifelse(AprtoMay == 1, 0, ifelse(MartoApr == 1, 0, ifelse(FebtoMar == 1, 0, ifelse(JantoFeb == 1, 0, ifelse(DectoJan == 1, 0, ifelse(NovtoDec == 1,0, ifelse(OcttoNov == 1, 0, Aug)))))))))))),Aug),
+        Sep = ifelse(Pushback_with_2 == 1,ifelse(SeptoOct == 1,0.4, ifelse(AugtoSep == 1, 0.6, ifelse(JultoAug == 1, 0, ifelse(JuntoJul == 1, 0, ifelse(MaytoJun == 1, 0, ifelse(AprtoMay == 1, 0, ifelse(MartoApr == 1, 0, ifelse(FebtoMar == 1, 0, ifelse(JantoFeb == 1, 0, ifelse(DectoJan == 1, 0, ifelse(NovtoDec == 1,0, ifelse(OcttoNov == 1, 0, Sep)))))))))))),Sep),
+        Oct = ifelse(Pushback_with_2 == 1,ifelse(SeptoOct == 1,0.6, ifelse(AugtoSep == 1, 0, ifelse(JultoAug == 1, 0, ifelse(JuntoJul == 1, 0, ifelse(MaytoJun == 1, 0, ifelse(AprtoMay == 1, 0, ifelse(MartoApr == 1, 0, ifelse(FebtoMar == 1, 0, ifelse(JantoFeb == 1, 0, ifelse(DectoJan == 1, 0, ifelse(NovtoDec == 1,0, ifelse(OcttoNov == 1, 0.4, Oct)))))))))))),Oct),
+        Nov = ifelse(Pushback_with_2 == 1,ifelse(SeptoOct == 1,0, ifelse(AugtoSep == 1, 0, ifelse(JultoAug == 1, 0, ifelse(JuntoJul == 1, 0, ifelse(MaytoJun == 1, 0, ifelse(AprtoMay == 1, 0, ifelse(MartoApr == 1, 0, ifelse(FebtoMar == 1, 0, ifelse(JantoFeb == 1, 0, ifelse(DectoJan == 1, 0, ifelse(NovtoDec == 1,0.4, ifelse(OcttoNov == 1, 0.6, Nov)))))))))))),Nov),
+        Dec = ifelse(Pushback_with_2 == 1,ifelse(SeptoOct == 1,0, ifelse(AugtoSep == 1, 0, ifelse(JultoAug == 1, 0, ifelse(JuntoJul == 1, 0, ifelse(MaytoJun == 1, 0, ifelse(AprtoMay == 1, 0, ifelse(MartoApr == 1, 0, ifelse(FebtoMar == 1, 0, ifelse(JantoFeb == 1, 0, ifelse(DectoJan == 1, 0.4, ifelse(NovtoDec == 1,0.6, ifelse(OcttoNov == 1, 0, Dec)))))))))))),Dec),
+        Jan = ifelse(Pushback_with_2 == 1 & (month(today())-1==1 |month(today())-2==1 |month(today())-3==1 ), 0, Jan),
+        Feb = ifelse(Pushback_with_2 == 1 & (month(today())-1==2 |month(today())-2==2 |month(today())-3==2 ), 0, Feb),
+        Mar = ifelse(Pushback_with_2 == 1 & (month(today())-1==3 |month(today())-2==3 |month(today())-3==3 ), 0, Mar),
+        Apr = ifelse(Pushback_with_2 == 1 & (month(today())-1==4 |month(today())-2==4 |month(today())-3==4 ), 0, Apr),
+        May = ifelse(Pushback_with_2 == 1 & (month(today())-1==5 |month(today())-2==5 |month(today())-3==5 ), 0, May),
+        Jun = ifelse(Pushback_with_2 == 1 & (month(today())-1==6 |month(today())-2==6 |month(today())-3==6 ), 0, Jun),
+        Jul = ifelse(Pushback_with_2 == 1 & (month(today())-1==7 |month(today())-2==7 |month(today())-3==7 ), 0, Jul),
+        Aug = ifelse(Pushback_with_2 == 1 & (month(today())-1==8 |month(today())-2==8 |month(today())-3==8 ), 0, Aug),
+        Sep = ifelse(Pushback_with_2 == 1 & (month(today())-1==9 |month(today())-2==9 |month(today())-3==9 ), 0, Sep),
+        Oct = ifelse(Pushback_with_2 == 1 & (month(today())-1==10|month(today())-2==10|month(today())-3==10), 0, Oct),
+        Nov = ifelse(Pushback_with_2 == 1 & (month(today())-1==11|month(today())-2==11|month(today())-3==11), 0, Nov),
+        Dec = ifelse(Pushback_with_2 == 1 & (month(today())-1==12|month(today())-2==12|month(today())-3==12), 0, Dec)
+        #Apr = ifelse(Pushback_with_2 == 1, 0, Apr),
+        #May = ifelse(Pushback_with_2 == 1, 0, May),
+        #Jun = ifelse(Pushback_with_2 == 1, 0, Jun)
+        )%>%
+  mutate(
+        Jan = ifelse(Pushback_with_1 == 1,ifelse(day_Sep >= 15, 0, ifelse(day_Aug >= 15, 0, ifelse(day_Jul >= 15, 0, ifelse(day_Jun >= 15, 0,ifelse(day_May >= 15, 0, ifelse(day_Apr >= 15, 0, ifelse(day_Mar >= 15,0, ifelse(day_Feb >= 15, 0, ifelse(day_Jan >= 15, 1, ifelse(day_Dec >= 15,0, ifelse(day_Nov >= 15, 0, ifelse(day_Oct >= 15, 0, Jan)))))))))))),Jan),
+        Feb = ifelse(Pushback_with_1 == 1,ifelse(day_Sep >= 15, 0, ifelse(day_Aug >= 15, 0, ifelse(day_Jul >= 15, 0, ifelse(day_Jun >= 15, 0,ifelse(day_May >= 15, 0, ifelse(day_Apr >= 15, 0, ifelse(day_Mar >= 15,0, ifelse(day_Feb >= 15, 1, ifelse(day_Jan >= 15, 0, ifelse(day_Dec >= 15,0, ifelse(day_Nov >= 15, 0, ifelse(day_Oct >= 15, 0, Feb)))))))))))),Feb),
+        Mar = ifelse(Pushback_with_1 == 1,ifelse(day_Sep >= 15, 0, ifelse(day_Aug >= 15, 0, ifelse(day_Jul >= 15, 0, ifelse(day_Jun >= 15, 0,ifelse(day_May >= 15, 0, ifelse(day_Apr >= 15, 0, ifelse(day_Mar >= 15,1, ifelse(day_Feb >= 15, 0, ifelse(day_Jan >= 15, 0, ifelse(day_Dec >= 15,0, ifelse(day_Nov >= 15, 0, ifelse(day_Oct >= 15, 0, Mar)))))))))))),Mar),
+        Apr = ifelse(Pushback_with_1 == 1,ifelse(day_Sep >= 15, 0, ifelse(day_Aug >= 15, 0, ifelse(day_Jul >= 15, 0, ifelse(day_Jun >= 15, 0,ifelse(day_May >= 15, 0, ifelse(day_Apr >= 15, 1, ifelse(day_Mar >= 15,0, ifelse(day_Feb >= 15, 0, ifelse(day_Jan >= 15, 0, ifelse(day_Dec >= 15,0, ifelse(day_Nov >= 15, 0, ifelse(day_Oct >= 15, 0, Apr)))))))))))),Apr),
+        May = ifelse(Pushback_with_1 == 1,ifelse(day_Sep >= 15, 0, ifelse(day_Aug >= 15, 0, ifelse(day_Jul >= 15, 0, ifelse(day_Jun >= 15, 0,ifelse(day_May >= 15, 1, ifelse(day_Apr >= 15, 0, ifelse(day_Mar >= 15,0, ifelse(day_Feb >= 15, 0, ifelse(day_Jan >= 15, 0, ifelse(day_Dec >= 15,0, ifelse(day_Nov >= 15, 0, ifelse(day_Oct >= 15, 0, May)))))))))))),May),
+        Jun = ifelse(Pushback_with_1 == 1,ifelse(day_Sep >= 15, 0, ifelse(day_Aug >= 15, 0, ifelse(day_Jul >= 15, 0, ifelse(day_Jun >= 15, 1,ifelse(day_May >= 15, 0, ifelse(day_Apr >= 15, 0, ifelse(day_Mar >= 15,0, ifelse(day_Feb >= 15, 0, ifelse(day_Jan >= 15, 0, ifelse(day_Dec >= 15,0, ifelse(day_Nov >= 15, 0, ifelse(day_Oct >= 15, 0, Jun)))))))))))),Jun),
+        Jul = ifelse(Pushback_with_1 == 1,ifelse(day_Sep >= 15, 0, ifelse(day_Aug >= 15, 0, ifelse(day_Jul >= 15, 1, ifelse(day_Jun >= 15, 0,ifelse(day_May >= 15, 0, ifelse(day_Apr >= 15, 0, ifelse(day_Mar >= 15,0, ifelse(day_Feb >= 15, 0, ifelse(day_Jan >= 15, 0, ifelse(day_Dec >= 15,0, ifelse(day_Nov >= 15, 0, ifelse(day_Oct >= 15, 0, Jul)))))))))))),Jul),
+        Aug = ifelse(Pushback_with_1 == 1,ifelse(day_Sep >= 15, 0, ifelse(day_Aug >= 15, 1, ifelse(day_Jul >= 15, 0, ifelse(day_Jun >= 15, 0,ifelse(day_May >= 15, 0, ifelse(day_Apr >= 15, 0, ifelse(day_Mar >= 15,0, ifelse(day_Feb >= 15, 0, ifelse(day_Jan >= 15, 0, ifelse(day_Dec >= 15,0, ifelse(day_Nov >= 15, 0, ifelse(day_Oct >= 15, 0, Aug)))))))))))),Aug),
+        Sep = ifelse(Pushback_with_1 == 1,ifelse(day_Sep >= 15, 1, ifelse(day_Aug >= 15, 0, ifelse(day_Jul >= 15, 0, ifelse(day_Jun >= 15, 0,ifelse(day_May >= 15, 0, ifelse(day_Apr >= 15, 0, ifelse(day_Mar >= 15,0, ifelse(day_Feb >= 15, 0, ifelse(day_Jan >= 15, 0, ifelse(day_Dec >= 15,0, ifelse(day_Nov >= 15, 0, ifelse(day_Oct >= 15, 0, Sep)))))))))))),Sep),
+        Oct = ifelse(Pushback_with_1 == 1,ifelse(day_Sep >= 15, 0, ifelse(day_Aug >= 15, 0, ifelse(day_Jul >= 15, 0, ifelse(day_Jun >= 15, 0,ifelse(day_May >= 15, 0, ifelse(day_Apr >= 15, 0, ifelse(day_Mar >= 15,0, ifelse(day_Feb >= 15, 0, ifelse(day_Jan >= 15, 0, ifelse(day_Dec >= 15,0, ifelse(day_Nov >= 15, 0, ifelse(day_Oct >= 15, 1, Oct)))))))))))),Oct),
+        Nov = ifelse(Pushback_with_1 == 1,ifelse(day_Sep >= 15, 0, ifelse(day_Aug >= 15, 0, ifelse(day_Jul >= 15, 0, ifelse(day_Jun >= 15, 0,ifelse(day_May >= 15, 0, ifelse(day_Apr >= 15, 0, ifelse(day_Mar >= 15,0, ifelse(day_Feb >= 15, 0, ifelse(day_Jan >= 15, 0, ifelse(day_Dec >= 15,0, ifelse(day_Nov >= 15, 1, ifelse(day_Oct >= 15, 0, Nov)))))))))))),Nov),
+        Dec = ifelse(Pushback_with_1 == 1,ifelse(day_Sep >= 15, 0, ifelse(day_Aug >= 15, 0, ifelse(day_Jul >= 15, 0, ifelse(day_Jun >= 15, 0,ifelse(day_May >= 15, 0, ifelse(day_Apr >= 15, 0, ifelse(day_Mar >= 15,0, ifelse(day_Feb >= 15, 0, ifelse(day_Jan >= 15, 0, ifelse(day_Dec >= 15,1, ifelse(day_Nov >= 15, 0, ifelse(day_Oct >= 15, 0, Dec)))))))))))),Dec),
+        Jan = ifelse(Pushback_with_1 == 1 & (month(today())-1==1 |month(today())-2==1 |month(today())-3==1 ), 0, Jan),
+        Feb = ifelse(Pushback_with_1 == 1 & (month(today())-1==2 |month(today())-2==2 |month(today())-3==2 ), 0, Feb),
+        Mar = ifelse(Pushback_with_1 == 1 & (month(today())-1==3 |month(today())-2==3 |month(today())-3==3 ), 0, Mar),
+        Apr = ifelse(Pushback_with_1 == 1 & (month(today())-1==4 |month(today())-2==4 |month(today())-3==4 ), 0, Apr),
+        May = ifelse(Pushback_with_1 == 1 & (month(today())-1==5 |month(today())-2==5 |month(today())-3==5 ), 0, May),
+        Jun = ifelse(Pushback_with_1 == 1 & (month(today())-1==6 |month(today())-2==6 |month(today())-3==6 ), 0, Jun),
+        Jul = ifelse(Pushback_with_1 == 1 & (month(today())-1==7 |month(today())-2==7 |month(today())-3==7 ), 0, Jul),
+        Aug = ifelse(Pushback_with_1 == 1 & (month(today())-1==8 |month(today())-2==8 |month(today())-3==8 ), 0, Aug),
+        Sep = ifelse(Pushback_with_1 == 1 & (month(today())-1==9 |month(today())-2==9 |month(today())-3==9 ), 0, Sep),
+        Oct = ifelse(Pushback_with_1 == 1 & (month(today())-1==10|month(today())-2==10|month(today())-3==10), 0, Oct),
+        Nov = ifelse(Pushback_with_1 == 1 & (month(today())-1==11|month(today())-2==11|month(today())-3==11), 0, Nov),
+        Dec = ifelse(Pushback_with_1 == 1 & (month(today())-1==12|month(today())-2==12|month(today())-3==12), 0, Dec)
+        #May = ifelse(Pushback_with_1 == 1, 0, May),
+        #Jun = ifelse(Pushback_with_1 == 1, 0, Jun),
+        #Apr = ifelse(Pushback_with_1 == 1, 0, Apr)
+        )%>%
+  mutate(Group = ifelse(OH_0==1, "0 OH", ifelse(normal == 1, "Normal", ifelse(Pushback_with_4 == 1, "not normal with 4 consecutive month", ifelse(Pushback_with_3 == 1, "not normal with 3 consecutive month", ifelse(Pushback_with_2 == 1, "not normal with 2 consecutive month", ifelse(Pushback_with_1 == 1, "not normal with 1 month","Other")))))))%>%
+  relocate(Group, .after = skuorder)%>%
+  # relocate(day_Jan, .after = day_Dec)%>%
+  left_join(scandate, by=c("skuorder" = "SKU", "merchantid" = "merchantname"))%>%
+  mutate_at(c("push_forward"), ~replace_na(.,0))%>%
+  mutate(push_forward = ifelse(push_forward==1&Group =="Normal",1,0))%>%
+  mutate(
+Oct = ifelse(push_forward == 1, ifelse(monthstiltoday == 6, 0,ifelse(monthstiltoday == 5, 0,ifelse(monthstiltoday == 4, 0,ifelse(monthstiltoday == 3, 0,ifelse(monthstiltoday == 2, 0,ifelse(monthstiltoday == 1, 0,                Oct)))))),Oct),
+Nov = ifelse(push_forward == 1, ifelse(monthstiltoday == 6, 0,ifelse(monthstiltoday == 5, 0,ifelse(monthstiltoday == 4, 0,ifelse(monthstiltoday == 3, 0,ifelse(monthstiltoday == 2, 0,ifelse(monthstiltoday == 1, 0,                Nov)))))),Nov),
+Dec = ifelse(push_forward == 1, ifelse(monthstiltoday == 6, 0,ifelse(monthstiltoday == 5, 0,ifelse(monthstiltoday == 4, 0,ifelse(monthstiltoday == 3, 0,ifelse(monthstiltoday == 2, 0,ifelse(monthstiltoday == 1, 0,                Dec)))))),Dec),
+Jan = ifelse(push_forward == 1, ifelse(monthstiltoday == 6, 0,ifelse(monthstiltoday == 5, 0,ifelse(monthstiltoday == 4, 0,ifelse(monthstiltoday == 3, 0,ifelse(monthstiltoday == 2, 0,ifelse(monthstiltoday == 1, 0,                Jan)))))),Jan),
+Feb = ifelse(push_forward == 1, ifelse(monthstiltoday == 6, 0,ifelse(monthstiltoday == 5, 0,ifelse(monthstiltoday == 4, 0,ifelse(monthstiltoday == 3, 0,ifelse(monthstiltoday == 2, 0,ifelse(monthstiltoday == 1, 0,                Feb)))))),Feb),
+Mar = ifelse(push_forward == 1, ifelse(monthstiltoday == 6, 0,ifelse(monthstiltoday == 5, 0,ifelse(monthstiltoday == 4, 0,ifelse(monthstiltoday == 3, 0,ifelse(monthstiltoday == 2, 0,ifelse(monthstiltoday == 1, 0,                Mar)))))),Mar),
+Apr = ifelse(push_forward == 1, ifelse(monthstiltoday == 6, 0.06,ifelse(monthstiltoday == 5, 0,ifelse(monthstiltoday == 4, 0,ifelse(monthstiltoday == 3, 0,ifelse(monthstiltoday == 2, 0,ifelse(monthstiltoday == 1, 0,             Apr)))))),Apr),
+May = ifelse(push_forward == 1, ifelse(monthstiltoday == 6, 0.08,ifelse(monthstiltoday == 5, 0.09,ifelse(monthstiltoday == 4, 0,ifelse(monthstiltoday == 3, 0,ifelse(monthstiltoday == 2, 0,ifelse(monthstiltoday == 1, 0,          May)))))),May),
+Jun = ifelse(push_forward == 1, ifelse(monthstiltoday == 6, 0.12,ifelse(monthstiltoday == 5, 0.13,ifelse(monthstiltoday == 4, 0.14,ifelse(monthstiltoday == 3, 0,ifelse(monthstiltoday == 2, 0,ifelse(monthstiltoday == 1, 0,       Jun)))))),Jun),
+Jul = ifelse(push_forward == 1, ifelse(monthstiltoday == 6, 0.17,ifelse(monthstiltoday == 5, 0.18,ifelse(monthstiltoday == 4, 0.20,ifelse(monthstiltoday == 3, 0.23,ifelse(monthstiltoday == 2, 0,ifelse(monthstiltoday == 1, 0,    Jul)))))),Jul),
+Aug = ifelse(push_forward == 1, ifelse(monthstiltoday == 6, 0.24,ifelse(monthstiltoday == 5, 0.25,ifelse(monthstiltoday == 4, 0.27,ifelse(monthstiltoday == 3, 0.32,ifelse(monthstiltoday == 2, 0.42,ifelse(monthstiltoday == 1, 0, Aug)))))),Aug),
+Sep = ifelse(push_forward == 1, ifelse(monthstiltoday == 6, 0.33,ifelse(monthstiltoday == 5, 0.35,ifelse(monthstiltoday == 4, 0.39,ifelse(monthstiltoday == 3, 0.45,ifelse(monthstiltoday == 2, 0.58,ifelse(monthstiltoday == 1, 1, Sep)))))),Sep),
+  )%>%
+  mutate(check = Jan+Feb+Mar+Apr+May+Jun+Jul+Aug+Sep+Oct+Nov+Dec)
+
+
+# active_sku <- read_csv("C:/Users/Yulin Pan/Downloads/SKU & HM Info - Master Sheet.csv")%>%
+#   select(`Account Name`, SKU, `HM# Status`)%>%
+#   mutate(`Account Name` = toupper(`Account Name`))
+
+skutosorted<-sales%>%
+  group_by(SKU, `Merchant Name`)%>%
+  summarise(SKU_stockey_sorted = max(SKU_stockey_sorted))
+
+df_indoor_4_group<-df_indoor_4%>%
+  left_join(skutosorted, by=c("skuorder" = "SKU",  "merchantid" = "Merchant Name"))%>%
+  filter(!is.na(SKU_stockey_sorted))%>%
+  select(SKU_stockey_sorted, merchantid, Group)%>%
+  group_by(SKU_stockey_sorted, merchantid)%>%
+  summarise(Group = max(Group))
+
+# df_indoor_4_active<-df_indoor_4%>%
+#   left_join(active_sku, by=c("skuorder" = "SKU", "merchantid" = "Account Name"))%>%
+#   filter(`HM# Status` == "Active")
+# 
+ # df_indoor_4_group<-df_indoor_4%>%
+ #   select(SKU_stockey_sorted, merchantid, Group)
+
+```
+
+
+```{r}
+sales_temp <- sales_raw %>%
+  mutate(`master sku` = as.character(`master sku`)) %>%
+  left_join(sku_stockey_to_mastersku, by = "master sku") %>%
+  filter(!is.na(SKU_stockey_sorted)) %>%
+  rename(`Merchant Name` = merchantname, `Order Date` = orderdate, SKU = skuorder) %>%
+  filter(!(`Merchant Name` == "WALMARTDIRECT" & `Order Date` == as.Date("2022-11-20"))) %>%
+  filter(!(`Merchant Name` %in% c("GDFLIQUIDATION", "OVERSTOCKLIQUIDATION", "WAYFAIRCASTLEGATE"))) %>%
+  mutate(`pieces sold` = ifelse(is.na(`pieces sold`), 0, `pieces sold`)) %>%
+  mutate(SKU = toupper(SKU)) %>%
+  filter(!grepl("\\.UK|\\.CA", `Merchant Name`))
+
+sales_in_1 = sales_temp[which(sales_temp$category1=="INDOOR"),]
+
+current_month <- format(Sys.Date(), "%Y-%m")
+# Calculate the start and end dates based on the current month
+end_date <- as.Date(paste0(substr(current_month, 1, 4), "-", substr(current_month, 6, 7), "-01"))-1
+start_date <- end_date-days(364)
+
+sales_48 <- sales_in_1[which(sales_in_1$`Order Date` <= end_date & sales_in_1$`Order Date` >= start_date), ]
+sales_48<-sales_48%>%
+  group_by(`SKU_stockey_sorted`,SKU,`Merchant Name`)%>%
+  summarise(`pieces sold` = sum(`pieces sold`))
+
+
+forecast_48<-sales_48%>%
+  left_join(skutomastersku, by=c("SKU", "Merchant Name"))%>%
+  # left_join(DI_List, by=c("SKU"))%>%
+  group_by(SKU_stockey_sorted, `Merchant Name`)%>%
+  summarise(`pieces sold` = sum(`pieces sold`))
+
+# forecast_48$DI[which(is.na(forecast_48$DI))]<-""
+
+
+temp = forecast_48%>%
+  group_by(`SKU_stockey_sorted`, `Merchant Name`)%>%
+  summarise(`Non-AMZ Total Sales` = sum(`pieces sold`))%>%
+  mutate(min = min(`Non-AMZ Total Sales`),`minmax` = (`Non-AMZ Total Sales`-min(`Non-AMZ Total Sales`))/(max(`Non-AMZ Total Sales`)-min(`Non-AMZ Total Sales`)))%>%
+  mutate(prob=1-minmax)%>%
+  ungroup()
+# temp = temp[which(temp$C1=="INDOOR"),]
+cdf<-temp%>%
+  mutate(cdf = ifelse(prob<=0.2, "0-20%", ifelse(prob<=0.4, "20-40%", ifelse(prob<=0.6, "40-60%", ifelse(prob<=0.8, "60-80%", "80-100%")))))%>%
+  select(SKU_stockey_sorted, `Merchant Name`, cdf)%>%
+  rename(Merchant.Name = `Merchant Name`)
+cdf$cdf[which(is.na(cdf$cdf))]<-"0-20%"
+# cdf$cdf<-"0-20%"
+```
+
+```{r}
+df_indoor_4_amz<-df_indoor_4%>%
+  filter(merchantid == "AMAZONDIRECTFULFILLMENTCKH")
+
+df_indoor_4_amz_add<-df_indoor_4%>%
+  filter(merchantid == "AMAZONINNETWORKCKH")
+
+cdf_amz<-cdf%>%
+  filter(`Merchant.Name` == "AMAZONDIRECTFULFILLMENTCKH"|`Merchant.Name` == "AMAZONINNETWORKCKH"|`Merchant.Name` == "AMAZONDIRECTIMPORTCKH")%>%
+  group_by(SKU_stockey_sorted)%>%
+  summarise(cdf=max(cdf))
+```
+
+
+
+```{r}
+current_year = year(today())
+#Jan
+start_date<-ifelse(max(sales_raw$orderdate)>as.Date(paste0(current_year,"-01-01")), paste0(current_year,"-1-1"), paste0(current_year-1,"-1-1"))
+end_date<-ifelse(max(sales_raw$orderdate)>as.Date(paste0(current_year,"-01-01")), paste0(current_year,"-1-31"), paste0(current_year-1,"-1-31"))
+date_num<-ifelse(max(sales_raw$orderdate)>as.Date(paste0(current_year,"-01-01")), as.numeric(paste0(current_year,"01")), as.numeric(paste0(current_year-1,"01")))
+
+sales_1 = sales_in[which(sales_in$`Order Date`<=as.Date(end_date) & sales_in$`Order Date`>=as.Date(start_date)),]
+sales_1<-sales_1%>%
+  group_by(`SKU_stockey_sorted`,SKU,`Merchant Name`)%>%
+  summarise(`pieces sold` = sum(`pieces sold`))
+
+days_1 = days[which(days$inventorymonth<=date_num & days$inventorymonth>=date_num),]
+days_1<-days_1%>%
+  group_by(skuorder,merchantid)%>%
+  summarise(online_days = sum(online_days))
+
+# days_1<-OH_2023_Jan%>%
+#   rename(online_days = Jan_OH)
+
+
+forecast_1<-sales_1%>%
+  left_join(days_1, by=c("SKU" = "skuorder", "Merchant Name" = "merchantid"))%>%
+  left_join(skutomastersku, by=c("SKU", "Merchant Name"))%>%
+  left_join(DI_List, by=c("SKU"))
+  # group_by(SKU_stockey_sorted, `Merchant Name`)%>%
+  # summarise(`pieces sold` = sum(`pieces sold`),
+  #           online_days = max(online_days),
+  #           DI = max(DI))
+
+  
+forecast_1$online_days[which(is.na(forecast_1$online_days))]<-0
+forecast_1$DI[which(is.na(forecast_1$DI))]<-""
+forecast_1 = forecast_1[which(forecast_1$online_days!=0),]
+
+
+forecast_1<-forecast_1%>%
+  left_join(cdf, by=c("SKU_stockey_sorted", "Merchant Name" = "Merchant.Name"))
+forecast_1<-forecast_1%>%
+  mutate(`Non-AMZ Total Sales` = 
+           ifelse(cdf == "0-20%", ifelse(online_days>=27, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*6*4.428571,`pieces sold`/online_days*5*4.428571)),
+                  ifelse(cdf=="20-40%", ifelse(online_days>=25, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5.5*4.428571,`pieces sold`/online_days*4.5*4.428571)),
+                         ifelse(cdf=="40-60%", ifelse(online_days>=23, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5*4.428571,`pieces sold`/online_days*4*4.428571)),
+                                ifelse(cdf=="60-80%", ifelse(online_days>=20, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*4.5*4.428571,`pieces sold`/online_days*3.5*4.428571)),`pieces sold`
+                                       )))))
+
+forecast_1_new<-forecast_1%>%
+  left_join(df_indoor_4, by=c("SKU" = "skuorder", "Merchant Name" = "merchantid"))%>%
+  select(SKU_stockey_sorted, SKU, `Merchant Name`, `master sku`, DI, `Non-AMZ Total Sales`, Jan)%>%
+  left_join(mastersku_c3, by=c("master sku"))%>%
+  left_join(mastersku_c32, by=c("master sku"))%>%
+  mutate(C32 = ifelse(Category3 == "CHRISTMAS DECORATION", "XMAS",ifelse(Category3 == "BEAN BAG", "Beanbag", C32)))%>%
+  mutate(C32 = ifelse(C32 %in% season_in$Category, C32, "Normal"))%>%
+  left_join(season_in, by=c("C32" = "Category"))%>%
+  mutate(Jan_yearly = `Non-AMZ Total Sales`/Jan_sea)
+forecast_1_new$Jan[which(is.na(forecast_1_new$Jan))]<-Jan
+forecast_1_new<-forecast_1_new%>%
+  mutate(Jan_weighted = Jan * Jan_yearly)%>%
+  group_by(SKU_stockey_sorted, `Merchant Name`)%>%
+  summarise(Jan_weighted = sum(Jan_weighted))
+
+
+# master_1<-forecast_1_new%>%
+#   group_by(`master sku`)%>%
+#   summarise(`Jan Yearly Weighted Sales` = sum(`Jan_weighted`))%>%
+#   left_join(Master_DI_List, by=c("master sku"))
+# master_1$DI[which(is.na(master_1$DI))]<-""
+
+amz_1<-amz[which((amz$Date<=as.Date(end_date) & amz$Date>=as.Date(start_date))),]
+amz_1<-amz_1%>%
+  group_by(`master sku`, SKUOrder, SKU_stockey_sorted)%>%
+  summarise(`pieces sold`=sum(`Ordered Units`))%>%
+  left_join(df_indoor_4_amz, by=c("SKUOrder" = "skuorder"))%>%
+  left_join(cdf_amz, by=c("SKU_stockey_sorted"))%>%
+  mutate(online_days = day_Jan)%>%
+  mutate_at(c("cdf"), ~replace_na("80-100%"))
+loop_a<-which(is.na(amz_1$day_Jan))
+for (i in loop_a){
+  amz_1$day_Jan[i] = df_indoor_4_amz_add$day_Jan[which(df_indoor_4_amz_add$skuorder==amz_1$SKUOrder[i])[1]]
+  amz_1$Jan[i] = df_indoor_4_amz_add$Jan[which(df_indoor_4_amz_add$skuorder==amz_1$SKUOrder[i])[1]]
+}
+
+weekly_1<-amz_1%>%
+  mutate(`AMZ Ordered Units` = 
+           ifelse(cdf == "0-20%", ifelse(online_days>=27, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*6*4.428571,`pieces sold`/online_days*5*4.428571)),
+                  ifelse(cdf=="20-40%", ifelse(online_days>=25, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5.5*4.428571,`pieces sold`/online_days*4.5*4.428571)),
+                         ifelse(cdf=="40-60%", ifelse(online_days>=23, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5*4.428571,`pieces sold`/online_days*4*4.428571)),
+                                ifelse(cdf=="60-80%", ifelse(online_days>=20, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*4.5*4.428571,`pieces sold`/online_days*3.5*4.428571)),`pieces sold`
+                                       )))))
+
+# weekly_1$percent[which(is.na(weekly_1$percent))]<-1
+# weekly_1$DI[which(is.na(weekly_1$DI))]<-""
+# 
+# for (i in 1:nrow(weekly_1)){
+#   if(weekly_1$DI[i] == "DI"){
+#     weekly_1$percent[i] = min(0.3, weekly_1$percent[i])
+#   }
+# }
+amz_Jan<-weekly_1%>%
+  left_join(mastersku_c3, by=c("master sku"))%>%
+  left_join(mastersku_c32, by=c("master sku"))%>%
+  mutate(C32 = ifelse(Category3 == "CHRISTMAS DECORATION", "XMAS",ifelse(Category3 == "BEAN BAG", "Beanbag", C32)))%>%
+  mutate(C32 = ifelse(C32 %in% season_in$Category, C32, "Normal"))%>%
+  left_join(season_in, by=c("C32" = "Category"))%>%
+  mutate(`AMZ Yearly Weighted Sales` = 1 * `AMZ Ordered Units` / Jan_sea * Jan)%>%
+  select(`master sku`, `AMZ Ordered Units`, `AMZ Yearly Weighted Sales`, SKU_stockey_sorted)
+
+amz_Jan_sku_stockey<-amz_Jan%>%
+  group_by(SKU_stockey_sorted)%>%
+  summarise(`AMZ Jan Weighted Sales` = sum(`AMZ Yearly Weighted Sales`))
+
+```
+
+```{r}
+#Feb
+start_date<-ifelse(max(sales_raw$orderdate)>as.Date(paste0(current_year,"-02-01")), paste0(current_year,"-2-1"), paste0(current_year-1,"-2-1"))
+end_date<-ifelse(max(sales_raw$orderdate)>as.Date(paste0(current_year,"-02-01")), paste0(current_year,"-2-28"), paste0(current_year-1,"-2-28"))
+date_num<-ifelse(max(sales_raw$orderdate)>as.Date(paste0(current_year,"-02-01")), as.numeric(paste0(current_year,"02")), as.numeric(paste0(current_year-1,"02")))
+
+sales_2 = sales_in[which(sales_in$`Order Date`<=as.Date(end_date) & sales_in$`Order Date`>=as.Date(start_date)),]
+sales_2<-sales_2%>%
+  group_by(`SKU_stockey_sorted`,SKU,`Merchant Name`)%>%
+  summarise(`pieces sold` = sum(`pieces sold`))
+
+days_2 = days[which(days$inventorymonth<=date_num & days$inventorymonth>=date_num),]
+days_2<-days_2%>%
+  group_by(skuorder,merchantid)%>%
+  summarise(online_days = sum(online_days))
+
+# days_2<-OH_2023_Feb%>%
+#   rename(online_days = Feb_OH)
+
+forecast_2<-sales_2%>%
+  left_join(days_2, by=c("SKU" = "skuorder", "Merchant Name" = "merchantid"))%>%
+  left_join(skutomastersku, by=c("SKU", "Merchant Name"))%>%
+  left_join(DI_List, by=c("SKU"))
+  # group_by(SKU_stockey_sorted, `Merchant Name`)%>%
+  # summarise(`pieces sold` = sum(`pieces sold`),
+  #           online_days = max(online_days),
+  #           DI = max(DI))
+
+  
+forecast_2$online_days[which(is.na(forecast_2$online_days))]<-0
+forecast_2$DI[which(is.na(forecast_2$DI))]<-""
+forecast_2 = forecast_2[which(forecast_2$online_days!=0),]
+
+
+forecast_2<-forecast_2%>%
+  left_join(cdf, by=c("SKU_stockey_sorted", "Merchant Name" = "Merchant.Name"))
+forecast_2<-forecast_2%>%
+  mutate(`Non-AMZ Total Sales` = 
+           ifelse(cdf == "0-20%", ifelse(online_days>=24, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*6*4,`pieces sold`/online_days*5*4)),
+                  ifelse(cdf=="20-40%", ifelse(online_days>=22, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5.5*4,`pieces sold`/online_days*4.5*4)),
+                         ifelse(cdf=="40-60%", ifelse(online_days>=20, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5*4,`pieces sold`/online_days*4*4)),
+                                ifelse(cdf=="60-80%", ifelse(online_days>=18, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*4.5*4,`pieces sold`/online_days*3.5*4)),`pieces sold`
+                                       )))))
+
+forecast_2_new<-forecast_2%>%
+  left_join(df_indoor_4, by=c("SKU" = "skuorder", "Merchant Name" = "merchantid"))%>%
+  select(SKU_stockey_sorted, SKU, `Merchant Name`, `master sku`, DI, `Non-AMZ Total Sales`, Feb)%>%
+  left_join(mastersku_c3, by=c("master sku"))%>%
+  left_join(mastersku_c32, by=c("master sku"))%>%
+  mutate(C32 = ifelse(Category3 == "CHRISTMAS DECORATION", "XMAS",ifelse(Category3 == "BEAN BAG", "Beanbag", C32)))%>%
+  mutate(C32 = ifelse(C32 %in% season_in$Category, C32, "Normal"))%>%
+  left_join(season_in, by=c("C32" = "Category"))%>%
+  mutate(Feb_yearly = `Non-AMZ Total Sales`/Feb_sea)
+forecast_2_new$Feb[which(is.na(forecast_2_new$Feb))]<-Feb
+forecast_2_new<-forecast_2_new%>%
+  mutate(Feb_weighted = Feb * Feb_yearly)%>%
+  group_by(SKU_stockey_sorted, `Merchant Name`)%>%
+  summarise(Feb_weighted = sum(Feb_weighted))
+
+# master_2<-forecast_2%>%
+#   group_by(`master sku`)%>%
+#   summarise(`Non-AMZ Total Sales` = sum(`Non-AMZ Total Sales`))%>%
+#   left_join(Master_DI_List, by=c("master sku"))
+# master_2$DI[which(is.na(master_2$DI))]<-""
+# 
+amz_2<-amz[which((amz$Date<=as.Date(end_date) & amz$Date>=as.Date(start_date))),]
+amz_2<-amz_2%>%
+  group_by(`master sku`, SKUOrder, SKU_stockey_sorted)%>%
+  summarise(`pieces sold`=sum(`Ordered Units`))%>%
+  left_join(df_indoor_4_amz, by=c("SKUOrder" = "skuorder"))%>%
+  left_join(cdf_amz, by=c("SKU_stockey_sorted"))%>%
+  mutate(online_days = day_Feb)%>%
+  mutate_at(c("cdf"), ~replace_na("80-100%"))
+loop_a<-which(is.na(amz_2$day_Feb))
+for (i in loop_a){
+  amz_2$day_Feb[i] = df_indoor_4_amz_add$day_Feb[which(df_indoor_4_amz_add$skuorder==amz_2$SKUOrder[i])[1]]
+  amz_2$Feb[i] = df_indoor_4_amz_add$Feb[which(df_indoor_4_amz_add$skuorder==amz_2$SKUOrder[i])[1]]
+}
+
+weekly_2<-amz_2%>%
+  mutate(`AMZ Ordered Units` = 
+           ifelse(cdf == "0-20%", ifelse(online_days>=24, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*6*4,`pieces sold`/online_days*5*4)),
+                  ifelse(cdf=="20-40%", ifelse(online_days>=22, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5.5*4,`pieces sold`/online_days*4.5*4)),
+                         ifelse(cdf=="40-60%", ifelse(online_days>=20, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5*4,`pieces sold`/online_days*4*4)),
+                                ifelse(cdf=="60-80%", ifelse(online_days>=18, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*4.5*4,`pieces sold`/online_days*3.5*4)),`pieces sold`
+                                       )))))
+# weekly_2$percent[which(is.na(weekly_2$percent))]<-1
+# weekly_2$DI[which(is.na(weekly_2$DI))]<-""
+# 
+# for (i in 1:nrow(weekly_2)){
+#   if(weekly_2$DI[i] == "DI"){
+#     weekly_2$percent[i] = min(0.3, weekly_2$percent[i])
+#   }
+# }
+amz_Feb<-weekly_2%>%
+  left_join(mastersku_c3, by=c("master sku"))%>%
+  left_join(mastersku_c32, by=c("master sku"))%>%
+  mutate(C32 = ifelse(Category3 == "CHRISTMAS DECORATION", "XMAS",ifelse(Category3 == "BEAN BAG", "Beanbag", C32)))%>%
+  mutate(C32 = ifelse(C32 %in% season_in$Category, C32, "Normal"))%>%
+  left_join(season_in, by=c("C32" = "Category"))%>%
+  mutate(`AMZ Yearly Weighted Sales` = 1 * `AMZ Ordered Units` / Feb_sea * Feb)%>%
+  select(`master sku`, `AMZ Ordered Units`, `AMZ Yearly Weighted Sales`, SKU_stockey_sorted)
+
+amz_Feb_sku_stockey<-amz_Feb%>%
+  group_by(SKU_stockey_sorted)%>%
+  summarise(`AMZ Feb Weighted Sales` = sum(`AMZ Yearly Weighted Sales`))
+
+```
+
+```{r}
+#Mar
+start_date<-ifelse(max(sales_raw$orderdate)>as.Date(paste0(current_year,"-03-01")), paste0(current_year,"-3-1"), paste0(current_year-1,"-3-1"))
+end_date<-ifelse(max(sales_raw$orderdate)>as.Date(paste0(current_year,"-03-01")), paste0(current_year,"-3-31"), paste0(current_year-1,"-3-31"))
+date_num<-ifelse(max(sales_raw$orderdate)>as.Date(paste0(current_year,"-03-01")), as.numeric(paste0(current_year,"03")), as.numeric(paste0(current_year-1,"03")))
+
+sales_3 = sales_in[which(sales_in$`Order Date`<=as.Date(end_date) & sales_in$`Order Date`>=as.Date(start_date)),]
+sales_3<-sales_3%>%
+  group_by(SKU_stockey_sorted,`SKU`,`Merchant Name`)%>%
+  summarise(`pieces sold` = sum(`pieces sold`))
+
+days_3 = days[which(days$inventorymonth<=date_num & days$inventorymonth>=date_num),]
+days_3<-days_3%>%
+  group_by(skuorder,merchantid)%>%
+  summarise(online_days = sum(online_days))
+# days_3<-OH_2023_Mar%>%
+#   rename(online_days = Mar_OH)
+
+forecast_3<-sales_3%>%
+  left_join(days_3, by=c("SKU" = "skuorder", "Merchant Name" = "merchantid"))%>%
+  left_join(skutomastersku, by=c("SKU", "Merchant Name"))%>%
+  left_join(DI_List, by=c("SKU"))
+
+
+forecast_3$online_days[which(is.na(forecast_3$online_days))]<-0
+forecast_3$DI[which(is.na(forecast_3$DI))]<-""
+forecast_3 = forecast_3[which(forecast_3$online_days!=0),]
+
+
+forecast_3<-forecast_3%>%
+  left_join(cdf, by=c("SKU_stockey_sorted", "Merchant Name" = "Merchant.Name"))
+forecast_3<-forecast_3%>%
+  mutate(`Non-AMZ Total Sales` = 
+           ifelse(cdf == "0-20%", ifelse(online_days>=27, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*6*4.428571,`pieces sold`/online_days*5*4.428571)),
+                  ifelse(cdf=="20-40%", ifelse(online_days>=25, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5.5*4.428571,`pieces sold`/online_days*4.5*4.428571)),
+                         ifelse(cdf=="40-60%", ifelse(online_days>=23, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5*4.428571,`pieces sold`/online_days*4*4.428571)),
+                                ifelse(cdf=="60-80%", ifelse(online_days>=20, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*4.5*4.428571,`pieces sold`/online_days*3.5*4.428571)),`pieces sold`
+                                       )))))
+
+
+forecast_3_new<-forecast_3%>%
+  left_join(df_indoor_4, by=c("SKU" = "skuorder", "Merchant Name" = "merchantid"))%>%
+  select(SKU_stockey_sorted, `Merchant Name`, `master sku`, DI, `Non-AMZ Total Sales`, Mar)%>%
+  left_join(mastersku_c3, by=c("master sku"))%>%
+  left_join(mastersku_c32, by=c("master sku"))%>%
+  mutate(C32 = ifelse(Category3 == "CHRISTMAS DECORATION", "XMAS",ifelse(Category3 == "BEAN BAG", "Beanbag", C32)))%>%
+  mutate(C32 = ifelse(C32 %in% season_in$Category, C32, "Normal"))%>%
+  left_join(season_in, by=c("C32" = "Category"))%>%
+  mutate(Mar_yearly = `Non-AMZ Total Sales`/Mar_sea)
+forecast_3_new$Mar[which(is.na(forecast_3_new$Mar))]<-Mar
+forecast_3_new<-forecast_3_new%>%
+  mutate(Mar_weighted = Mar * Mar_yearly)%>%
+  group_by(SKU_stockey_sorted, `Merchant Name`)%>%
+  summarise(Mar_weighted = sum(Mar_weighted))
+
+# master_3<-forecast_3%>%
+#   group_by(`master sku`)%>%
+#   summarise(`Non-AMZ Total Sales` = sum(`Non-AMZ Total Sales`))%>%
+#   left_join(Master_DI_List, by=c("master sku"))
+# master_3$DI[which(is.na(master_3$DI))]<-""
+# 
+amz_3<-amz[which((amz$Date<=as.Date(end_date) & amz$Date>=as.Date(start_date))),]
+amz_3<-amz_3%>%
+  group_by(`master sku`, SKUOrder, SKU_stockey_sorted)%>%
+  summarise(`pieces sold`=sum(`Ordered Units`))%>%
+  left_join(df_indoor_4_amz, by=c("SKUOrder" = "skuorder"))%>%
+  left_join(cdf_amz, by=c("SKU_stockey_sorted"))%>%
+  mutate(online_days = day_Mar)%>%
+  mutate_at(c("cdf"), ~replace_na("80-100%"))
+loop_a<-which(is.na(amz_3$day_Mar))
+for (i in loop_a){
+  amz_3$day_Mar[i] = df_indoor_4_amz_add$day_Mar[which(df_indoor_4_amz_add$skuorder==amz_3$SKUOrder[i])[1]]
+  amz_3$Mar[i] = df_indoor_4_amz_add$Mar[which(df_indoor_4_amz_add$skuorder==amz_3$SKUOrder[i])[1]]
+}
+  
+weekly_3<-amz_3%>%
+  mutate(`AMZ Ordered Units` = 
+           ifelse(cdf == "0-20%", ifelse(online_days>=27, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*6*4.428571,`pieces sold`/online_days*5*4.428571)),
+                  ifelse(cdf=="20-40%", ifelse(online_days>=25, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5.5*4.428571,`pieces sold`/online_days*4.5*4.428571)),
+                         ifelse(cdf=="40-60%", ifelse(online_days>=23, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5*4.428571,`pieces sold`/online_days*4*4.428571)),
+                                ifelse(cdf=="60-80%", ifelse(online_days>=20, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*4.5*4.428571,`pieces sold`/online_days*3.5*4.428571)),`pieces sold`
+                                       )))))
+# weekly_3$percent[which(is.na(weekly_3$percent))]<-1
+# weekly_3$DI[which(is.na(weekly_3$DI))]<-""
+# 
+# for (i in 1:nrow(weekly_3)){
+#   if(weekly_3$DI[i] == "DI"){
+#     weekly_3$percent[i] = min(0.3, weekly_3$percent[i])
+#   }
+# }
+amz_Mar<-weekly_3%>%
+  left_join(mastersku_c3, by=c("master sku"))%>%
+  left_join(mastersku_c32, by=c("master sku"))%>%
+  mutate(C32 = ifelse(Category3 == "CHRISTMAS DECORATION", "XMAS",ifelse(Category3 == "BEAN BAG", "Beanbag", C32)))%>%
+  mutate(C32 = ifelse(C32 %in% season_in$Category, C32, "Normal"))%>%
+  left_join(season_in, by=c("C32" = "Category"))%>%
+  mutate(`AMZ Yearly Weighted Sales` = 1 * `AMZ Ordered Units` / Mar_sea * Mar)%>%
+  select(`master sku`, `AMZ Ordered Units`, `AMZ Yearly Weighted Sales`, SKU_stockey_sorted)
+
+amz_Mar_sku_stockey<-amz_Mar%>%
+  group_by(SKU_stockey_sorted)%>%
+  summarise(`AMZ Mar Weighted Sales` = sum(`AMZ Yearly Weighted Sales`))
+# 
+# total_3_hm <- Master_SKU_in%>%
+#   full_join(weekly_3, by = c("Master SKU" = "master sku"))%>%
+#   full_join(actual_3, by = c("Master SKU" = "master sku"))%>%
+#   mutate(`HM pieces sold` =  ifelse(`SKU count`!=1, `Total Sales`*`HM pcs needed`, `Total Sales`),
+#          `actual_3` = ifelse(`SKU count`!=1, `actual_3`*`HM pcs needed`, `actual_3`))%>%
+#   rename(`SKU pieces sold` = `Total Sales`, )%>%
+#   select(`Master SKU`, `HM stockey`,
+#          `SKU pieces sold`, `HM pieces sold`, actual_3)%>%
+#   mutate(`Master SKU` = as.double(`Master SKU`))%>%
+#   arrange(`Master SKU`)
+# total_3_hm$`HM pieces sold`[which(is.na(total_3_hm$`HM pieces sold`))]<-0
+# total_3_hm$actual_3[which(is.na(total_3_hm$actual_3))]<-0
+# total_3_hm<-total_3_hm%>%
+#   group_by(`HM stockey`)%>%
+#   summarise(Actual_3 = sum(actual_3),
+#     `Forecast_3` = sum(`HM pieces sold`))
+# total_3_hm$`Forecast_3`[which(is.na(total_3_hm$`Forecast_3`))]<-0
+# 
+# total_3_hm<-total_3_hm%>%
+#    mutate(Mar = Forecast_3 * Mar_in)
+#          Feb_1 = Forecast_1 * Feb_in,
+#          Mar_1 = Forecast_1 * Mar_in,
+#          Apr_1 = Forecast_1 * Apr_in,
+#          May_1 = Forecast_1 * May_in,
+#          Jun_1 = Forecast_1 * Jun_in,
+#          Jul_1 = Forecast_1 * Jul_in,
+#          Aug_1 = Forecast_1 * Aug_in,
+#          Sep_1 = Forecast_1 * Sep_in,
+#          Oct_1 = Forecast_1 * Oct_in,
+#          Nov_1 = Forecast_1 * Nov_in,
+#          Dec_1 = Forecast_1 * Dec_in,)
+```
+
+```{r}
+#Apr
+start_date<-ifelse(max(sales_raw$orderdate)>as.Date(paste0(current_year,"-04-01")), paste0(current_year,"-4-1"), paste0(current_year-1,"-4-1"))
+end_date<-ifelse(max(sales_raw$orderdate)>as.Date(paste0(current_year,"-04-01")), paste0(current_year,"-4-30"), paste0(current_year-1,"-4-30"))
+date_num<-ifelse(max(sales_raw$orderdate)>as.Date(paste0(current_year,"-04-01")), as.numeric(paste0(current_year,"04")), as.numeric(paste0(current_year-1,"04")))
+
+sales_4 = sales_in[which(sales_in$`Order Date`<=as.Date(end_date) & sales_in$`Order Date`>=as.Date(start_date)),]
+sales_4<-sales_4%>%
+  group_by(`SKU_stockey_sorted`,`SKU`,`Merchant Name`)%>%
+  summarise(`pieces sold` = sum(`pieces sold`))
+
+days_4 = days[which(days$inventorymonth<=date_num & days$inventorymonth>=date_num),]
+days_4<-days_4%>%
+  group_by(skuorder,merchantid)%>%
+  summarise(online_days = sum(online_days))
+
+# days_4<-OH_2023_Apr%>%
+#   rename(online_days = Apr_OH)
+
+forecast_4<-sales_4%>%
+  left_join(days_4, by=c("SKU" = "skuorder", "Merchant Name" = "merchantid"))%>%
+  left_join(skutomastersku, by=c("SKU", "Merchant Name"))%>%
+  left_join(DI_List, by=c("SKU"))
+
+
+forecast_4$online_days[which(is.na(forecast_4$online_days))]<-0
+forecast_4$DI[which(is.na(forecast_4$DI))]<-""
+forecast_4 = forecast_4[which(forecast_4$online_days!=0),]
+
+
+forecast_4<-forecast_4%>%
+  left_join(cdf, by=c("SKU_stockey_sorted", "Merchant Name" = "Merchant.Name"))
+forecast_4<-forecast_4%>%
+  mutate(`Non-AMZ Total Sales` = 
+           ifelse(cdf == "0-20%", ifelse(online_days>=26, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*6*4.285714,`pieces sold`/online_days*5*4.285714)),
+                  ifelse(cdf=="20-40%", ifelse(online_days>=24, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5.5*4.285714,`pieces sold`/online_days*4.5*4.285714)),
+                         ifelse(cdf=="40-60%", ifelse(online_days>=22, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5*4.285714,`pieces sold`/online_days*4*4.285714)),
+                                ifelse(cdf=="60-80%", ifelse(online_days>=20, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*4.5*4.285714,`pieces sold`/online_days*3.5*4.285714)),`pieces sold`
+                                       )))))
+
+
+forecast_4_new<-forecast_4%>%
+  left_join(df_indoor_4, by=c("SKU" = "skuorder", "Merchant Name" = "merchantid"))%>%
+  select(SKU_stockey_sorted, `Merchant Name`, `master sku`, DI, `Non-AMZ Total Sales`, Apr)%>%
+  left_join(mastersku_c3, by=c("master sku"))%>%
+  left_join(mastersku_c32, by=c("master sku"))%>%
+  mutate(C32 = ifelse(Category3 == "CHRISTMAS DECORATION", "XMAS",ifelse(Category3 == "BEAN BAG", "Beanbag", C32)))%>%
+  mutate(C32 = ifelse(C32 %in% season_in$Category, C32, "Normal"))%>%
+  left_join(season_in, by=c("C32" = "Category"))%>%
+  mutate(Apr_yearly = `Non-AMZ Total Sales`/Apr_sea)
+forecast_4_new$Apr[which(is.na(forecast_4_new$Apr))]<-Apr
+forecast_4_new<-forecast_4_new%>%
+  mutate(Apr_weighted = Apr * Apr_yearly)%>%
+  group_by(SKU_stockey_sorted, `Merchant Name`)%>%
+  summarise(Apr_weighted = sum(Apr_weighted))
+
+# master_4<-forecast_4%>%
+#   group_by(`master sku`)%>%
+#   summarise(`Non-AMZ Total Sales` = sum(`Non-AMZ Total Sales`))%>%
+#   left_join(Master_DI_List, by=c("master sku"))
+# master_4$DI[which(is.na(master_4$DI))]<-""
+# 
+amz_4<-amz[which((amz$Date<=as.Date(end_date) & amz$Date>=as.Date(start_date))),]
+amz_4<-amz_4%>%
+  group_by(`master sku`, SKUOrder, SKU_stockey_sorted)%>%
+  summarise(`pieces sold`=sum(`Ordered Units`))%>%
+  left_join(df_indoor_4_amz, by=c("SKUOrder" = "skuorder"))%>%
+  left_join(cdf_amz, by=c("SKU_stockey_sorted"))%>%
+  mutate(online_days = day_Apr)%>%
+  mutate_at(c("cdf"), ~replace_na("80-100%"))
+loop_a<-which(is.na(amz_4$day_Apr))
+for (i in loop_a){
+  amz_4$day_Apr[i] = df_indoor_4_amz_add$day_Apr[which(df_indoor_4_amz_add$skuorder==amz_4$SKUOrder[i])[1]]
+  amz_4$Apr[i] = df_indoor_4_amz_add$Apr[which(df_indoor_4_amz_add$skuorder==amz_4$SKUOrder[i])[1]]
+}
+  
+weekly_4<-amz_4%>%
+  mutate(`AMZ Ordered Units` = 
+           ifelse(cdf == "0-20%", ifelse(online_days>=26, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*6*4.285714,`pieces sold`/online_days*5*4.285714)),
+                  ifelse(cdf=="20-40%", ifelse(online_days>=24, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5.5*4.285714,`pieces sold`/online_days*4.5*4.285714)),
+                         ifelse(cdf=="40-60%", ifelse(online_days>=22, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5*4.285714,`pieces sold`/online_days*4*4.285714)),
+                                ifelse(cdf=="60-80%", ifelse(online_days>=20, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*4.5*4.285714,`pieces sold`/online_days*3.5*4.285714)),`pieces sold`
+                                       )))))
+# weekly_4$percent[which(is.na(weekly_4$percent))]<-1
+# weekly_4$DI[which(is.na(weekly_4$DI))]<-""
+# 
+# for (i in 1:nrow(weekly_4)){
+#   if(weekly_4$DI[i] == "DI"){
+#     weekly_4$percent[i] = min(0.3, weekly_4$percent[i])
+#   }
+# }
+amz_Apr<-weekly_4%>%
+  left_join(mastersku_c3, by=c("master sku"))%>%
+  left_join(mastersku_c32, by=c("master sku"))%>%
+  mutate(C32 = ifelse(Category3 == "CHRISTMAS DECORATION", "XMAS",ifelse(Category3 == "BEAN BAG", "Beanbag", C32)))%>%
+  mutate(C32 = ifelse(C32 %in% season_in$Category, C32, "Normal"))%>%
+  left_join(season_in, by=c("C32" = "Category"))%>%
+  mutate(`AMZ Yearly Weighted Sales` = 1 * `AMZ Ordered Units` / Apr_sea * Apr)%>%
+  select(`master sku`, `AMZ Ordered Units`, `AMZ Yearly Weighted Sales`, SKU_stockey_sorted)
+
+amz_Apr_sku_stockey<-amz_Apr%>%
+  group_by(SKU_stockey_sorted)%>%
+  summarise(`AMZ Apr Weighted Sales` = sum(`AMZ Yearly Weighted Sales`))
+# 
+# total_4_hm <- Master_SKU_in%>%
+#   full_join(weekly_4, by = c("Master SKU" = "master sku"))%>%
+#   full_join(actual_4, by = c("Master SKU" = "master sku"))%>%
+#   mutate(`HM pieces sold` =  ifelse(`SKU count`!=1, `Total Sales`*`HM pcs needed`, `Total Sales`),
+#          `actual_4` = ifelse(`SKU count`!=1, `actual_4`*`HM pcs needed`, `actual_4`))%>%
+#   rename(`SKU pieces sold` = `Total Sales`, )%>%
+#   select(`Master SKU`, `HM stockey`,
+#          `SKU pieces sold`, `HM pieces sold`, actual_4)%>%
+#   mutate(`Master SKU` = as.double(`Master SKU`))%>%
+#   arrange(`Master SKU`)
+# total_4_hm$`HM pieces sold`[which(is.na(total_4_hm$`HM pieces sold`))]<-0
+# total_4_hm$actual_4[which(is.na(total_4_hm$actual_4))]<-0
+# total_4_hm<-total_4_hm%>%
+#   group_by(`HM stockey`)%>%
+#   summarise(Actual_4 = sum(actual_4),
+#     `Forecast_4` = sum(`HM pieces sold`))
+# total_4_hm$`Forecast_4`[which(is.na(total_4_hm$`Forecast_4`))]<-0
+# 
+#  total_4_hm<-total_4_hm%>%
+#    mutate(Apr = Forecast_4 * Apr_in)
+#          Feb_1 = Forecast_1 * Feb_in,
+#          Mar_1 = Forecast_1 * Mar_in,
+#          Apr_1 = Forecast_1 * Apr_in,
+#          May_1 = Forecast_1 * May_in,
+#          Jun_1 = Forecast_1 * Jun_in,
+#          Jul_1 = Forecast_1 * Jul_in,
+#          Aug_1 = Forecast_1 * Aug_in,
+#          Sep_1 = Forecast_1 * Sep_in,
+#          Oct_1 = Forecast_1 * Oct_in,
+#          Nov_1 = Forecast_1 * Nov_in,
+#          Dec_1 = Forecast_1 * Dec_in,)
+```
+
+```{r}
+#May
+start_date<-ifelse(max(sales_raw$orderdate)>as.Date(paste0(current_year,"-05-01")), paste0(current_year,"-5-1"), paste0(current_year-1,"-5-1"))
+end_date<-ifelse(max(sales_raw$orderdate)>as.Date(paste0(current_year,"-05-01")), paste0(current_year,"-5-31"), paste0(current_year-1,"-5-31"))
+date_num<-ifelse(max(sales_raw$orderdate)>as.Date(paste0(current_year,"-05-01")), as.numeric(paste0(current_year,"05")), as.numeric(paste0(current_year-1,"05")))
+
+sales_5 = sales_in[which(sales_in$`Order Date`<=as.Date(end_date) & sales_in$`Order Date`>=as.Date(start_date)),]
+sales_5<-sales_5%>%
+  group_by(`SKU_stockey_sorted`,`SKU`,`Merchant Name`)%>%
+  summarise(`pieces sold` = sum(`pieces sold`))
+
+days_5 = days[which(days$inventorymonth<=date_num & days$inventorymonth>=date_num),]
+days_5<-days_5%>%
+  group_by(skuorder,merchantid)%>%
+  summarise(online_days = sum(online_days))
+
+# days_5<-OH_2023_May%>%
+#   rename(online_days = May_OH)
+
+forecast_5<-sales_5%>%
+  left_join(days_5, by=c("SKU" = "skuorder", "Merchant Name" = "merchantid"))%>%
+  left_join(skutomastersku, by=c("SKU", "Merchant Name"))%>%
+  left_join(DI_List, by=c("SKU"))
+
+
+forecast_5$online_days[which(is.na(forecast_5$online_days))]<-0
+forecast_5$DI[which(is.na(forecast_5$DI))]<-""
+forecast_5 = forecast_5[which(forecast_5$online_days!=0),]
+
+
+forecast_5<-forecast_5%>%
+  left_join(cdf, by=c("SKU_stockey_sorted", "Merchant Name" = "Merchant.Name"))
+forecast_5<-forecast_5%>%
+  mutate(`Non-AMZ Total Sales` = 
+           ifelse(cdf == "0-20%", ifelse(online_days>=27, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*6*4.428571,`pieces sold`/online_days*5*4.428571)),
+                  ifelse(cdf=="20-40%", ifelse(online_days>=25, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5.5*4.428571,`pieces sold`/online_days*4.5*4.428571)),
+                         ifelse(cdf=="40-60%", ifelse(online_days>=23, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5*4.428571,`pieces sold`/online_days*4*4.428571)),
+                                ifelse(cdf=="60-80%", ifelse(online_days>=20, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*4.5*4.428571,`pieces sold`/online_days*3.5*4.428571)),`pieces sold`
+                                       )))))
+
+forecast_5_new<-forecast_5%>%
+  left_join(df_indoor_4, by=c("SKU" = "skuorder", "Merchant Name" = "merchantid"))%>%
+  select(SKU_stockey_sorted, `Merchant Name`, `master sku`, DI, `Non-AMZ Total Sales`, May)%>%
+  left_join(mastersku_c3, by=c("master sku"))%>%
+  left_join(mastersku_c32, by=c("master sku"))%>%
+  mutate(C32 = ifelse(Category3 == "CHRISTMAS DECORATION", "XMAS",ifelse(Category3 == "BEAN BAG", "Beanbag", C32)))%>%
+  mutate(C32 = ifelse(C32 %in% season_in$Category, C32, "Normal"))%>%
+  left_join(season_in, by=c("C32" = "Category"))%>%
+  mutate(May_yearly = `Non-AMZ Total Sales`/May_sea)
+forecast_5_new$May[which(is.na(forecast_5_new$May))]<-May
+forecast_5_new<-forecast_5_new%>%
+  mutate(May_weighted = May * May_yearly)%>%
+  group_by(SKU_stockey_sorted, `Merchant Name`)%>%
+  summarise(May_weighted = sum(May_weighted))
+
+
+# master_5<-forecast_5%>%
+#   group_by(`master sku`)%>%
+#   summarise(`Non-AMZ Total Sales` = sum(`Non-AMZ Total Sales`))%>%
+#   left_join(Master_DI_List, by=c("master sku"))
+# master_5$DI[which(is.na(master_5$DI))]<-""
+# 
+amz_5<-amz[which((amz$Date<=as.Date(end_date) & amz$Date>=as.Date(start_date))),]
+amz_5<-amz_5%>%
+  group_by(`master sku`, SKUOrder, SKU_stockey_sorted)%>%
+  summarise(`pieces sold`=sum(`Ordered Units`))%>%
+  left_join(df_indoor_4_amz, by=c("SKUOrder" = "skuorder"))%>%
+  left_join(cdf_amz, by=c("SKU_stockey_sorted"))%>%
+  mutate(online_days = day_May)%>%
+  mutate_at(c("cdf"), ~replace_na("80-100%"))
+loop_a<-which(is.na(amz_5$day_May))
+for (i in loop_a){
+  amz_5$day_May[i] = df_indoor_4_amz_add$day_May[which(df_indoor_4_amz_add$skuorder==amz_5$SKUOrder[i])[1]]
+  amz_5$May[i] = df_indoor_4_amz_add$May[which(df_indoor_4_amz_add$skuorder==amz_5$SKUOrder[i])[1]]
+}
+  
+weekly_5<-amz_5%>%
+  mutate(`AMZ Ordered Units` = 
+           ifelse(cdf == "0-20%", ifelse(online_days>=27, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*6*4.428571,`pieces sold`/online_days*5*4.428571)),
+                  ifelse(cdf=="20-40%", ifelse(online_days>=25, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5.5*4.428571,`pieces sold`/online_days*4.5*4.428571)),
+                         ifelse(cdf=="40-60%", ifelse(online_days>=23, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5*4.428571,`pieces sold`/online_days*4*4.428571)),
+                                ifelse(cdf=="60-80%", ifelse(online_days>=20, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*4.5*4.428571,`pieces sold`/online_days*3.5*4.428571)),`pieces sold`
+                                       )))))
+# weekly_5$percent[which(is.na(weekly_5$percent))]<-1
+# weekly_5$DI[which(is.na(weekly_5$DI))]<-""
+# 
+# for (i in 1:nrow(weekly_5)){
+#   if(weekly_5$DI[i] == "DI"){
+#     weekly_5$percent[i] = min(0.3, weekly_5$percent[i])
+#   }
+# }
+amz_May<-weekly_5%>%
+  left_join(mastersku_c3, by=c("master sku"))%>%
+  left_join(mastersku_c32, by=c("master sku"))%>%
+  mutate(C32 = ifelse(Category3 == "CHRISTMAS DECORATION", "XMAS",ifelse(Category3 == "BEAN BAG", "Beanbag", C32)))%>%
+  mutate(C32 = ifelse(C32 %in% season_in$Category, C32, "Normal"))%>%
+  left_join(season_in, by=c("C32" = "Category"))%>%
+  mutate(`AMZ Yearly Weighted Sales` = 1 * `AMZ Ordered Units` / May_sea * May)%>%
+  select(`master sku`, `AMZ Ordered Units`, `AMZ Yearly Weighted Sales`, SKU_stockey_sorted)
+
+amz_May_sku_stockey<-amz_May%>%
+  group_by(SKU_stockey_sorted)%>%
+  summarise(`AMZ May Weighted Sales` = sum(`AMZ Yearly Weighted Sales`))
+# 
+# total_5_hm <- Master_SKU_in%>%
+#   full_join(weekly_5, by = c("Master SKU" = "master sku"))%>%
+#   full_join(actual_5, by = c("Master SKU" = "master sku"))%>%
+#   mutate(`HM pieces sold` =  ifelse(`SKU count`!=1, `Total Sales`*`HM pcs needed`, `Total Sales`),
+#          `actual_5` = ifelse(`SKU count`!=1, `actual_5`*`HM pcs needed`, `actual_5`))%>%
+#   rename(`SKU pieces sold` = `Total Sales`, )%>%
+#   select(`Master SKU`, `HM stockey`,
+#          `SKU pieces sold`, `HM pieces sold`, actual_5)%>%
+#   mutate(`Master SKU` = as.double(`Master SKU`))%>%
+#   arrange(`Master SKU`)
+# total_5_hm$`HM pieces sold`[which(is.na(total_5_hm$`HM pieces sold`))]<-0
+# total_5_hm$actual_5[which(is.na(total_5_hm$actual_5))]<-0
+# total_5_hm<-total_5_hm%>%
+#   group_by(`HM stockey`)%>%
+#   summarise(Actual_5 = sum(actual_5),
+#     `Forecast_5` = sum(`HM pieces sold`))
+# total_5_hm$`Forecast_5`[which(is.na(total_5_hm$`Forecast_5`))]<-0
+# 
+#  total_5_hm<-total_5_hm%>%
+#    mutate(May = Forecast_5 * May_in)
+#          Feb_5 = Forecast_5 * Feb_in,
+#          Mar_5 = Forecast_5 * Mar_in,
+#          Apr_5 = Forecast_5 * Apr_in,
+#          May_5 = Forecast_5 * May_in,
+#          Jun_5 = Forecast_5 * Jun_in,
+#          Jul_5 = Forecast_5 * Jul_in,
+#          Aug_5 = Forecast_5 * Aug_in,
+#          Sep_5 = Forecast_5 * Sep_in,
+#          Oct_5 = Forecast_5 * Oct_in,
+#          Nov_5 = Forecast_5 * Nov_in,
+#          Dec_5 = Forecast_5 * Dec_in,)
+```
+
+```{r}
+#Jun
+start_date<-ifelse(max(sales_raw$orderdate)>as.Date(paste0(current_year,"-06-01")), paste0(current_year,"-6-1"), paste0(current_year-1,"-6-1"))
+end_date<-ifelse(max(sales_raw$orderdate)>as.Date(paste0(current_year,"-06-01")), paste0(current_year,"-6-30"), paste0(current_year-1,"-6-30"))
+date_num<-ifelse(max(sales_raw$orderdate)>as.Date(paste0(current_year,"-06-01")), as.numeric(paste0(current_year,"06")), as.numeric(paste0(current_year-1,"06")))
+
+sales_6 = sales_in[which(sales_in$`Order Date`<=as.Date(end_date) & sales_in$`Order Date`>=as.Date(start_date)),]
+sales_6<-sales_6%>%
+  group_by(`SKU_stockey_sorted`,`SKU`,`Merchant Name`)%>%
+  summarise(`pieces sold` = sum(`pieces sold`))
+
+days_6 = days[which(days$inventorymonth<=date_num & days$inventorymonth>=date_num),]
+days_6<-days_6%>%
+  group_by(skuorder,merchantid)%>%
+  summarise(online_days = sum(online_days))
+
+# days_6<-OH_2023_Jun%>%
+#   rename(online_days = Jun_OH)
+
+forecast_6<-sales_6%>%
+  left_join(days_6, by=c("SKU" = "skuorder", "Merchant Name" = "merchantid"))%>%
+  left_join(skutomastersku, by=c("SKU", "Merchant Name"))%>%
+  left_join(DI_List, by=c("SKU"))
+
+
+forecast_6$online_days[which(is.na(forecast_6$online_days))]<-0
+forecast_6$DI[which(is.na(forecast_6$DI))]<-""
+forecast_6 = forecast_6[which(forecast_6$online_days!=0),]
+
+
+forecast_6<-forecast_6%>%
+  left_join(cdf, by=c("SKU_stockey_sorted", "Merchant Name" = "Merchant.Name"))
+forecast_6<-forecast_6%>%
+  mutate(`Non-AMZ Total Sales` = 
+           ifelse(cdf == "0-20%", ifelse(online_days>=26, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*6*4.285714,`pieces sold`/online_days*5*4.285714)),
+                  ifelse(cdf=="20-40%", ifelse(online_days>=24, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5.5*4.285714,`pieces sold`/online_days*4.5*4.285714)),
+                         ifelse(cdf=="40-60%", ifelse(online_days>=22, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5*4.285714,`pieces sold`/online_days*4*4.285714)),
+                                ifelse(cdf=="60-80%", ifelse(online_days>=20, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*4.5*4.285714,`pieces sold`/online_days*3.5*4.285714)),`pieces sold`
+                                       )))))
+
+forecast_6_new<-forecast_6%>%
+  left_join(df_indoor_4, by=c("SKU" = "skuorder", "Merchant Name" = "merchantid"))%>%
+  select(SKU_stockey_sorted, `Merchant Name`, `master sku`, DI, `Non-AMZ Total Sales`, Jun)%>%
+  left_join(mastersku_c3, by=c("master sku"))%>%
+  left_join(mastersku_c32, by=c("master sku"))%>%
+  mutate(C32 = ifelse(Category3 == "CHRISTMAS DECORATION", "XMAS",ifelse(Category3 == "BEAN BAG", "Beanbag", C32)))%>%
+  mutate(C32 = ifelse(C32 %in% season_in$Category, C32, "Normal"))%>%
+  left_join(season_in, by=c("C32" = "Category"))%>%
+  mutate(Jun_yearly = `Non-AMZ Total Sales`/Jun_sea)
+forecast_6_new$Jun[which(is.na(forecast_6_new$Jun))]<-Jun
+forecast_6_new<-forecast_6_new%>%
+  mutate(Jun_weighted = Jun * Jun_yearly)%>%
+  group_by(SKU_stockey_sorted, `Merchant Name`)%>%
+  summarise(Jun_weighted = sum(Jun_weighted))
+
+
+# master_6<-forecast_6%>%
+#   group_by(`master sku`)%>%
+#   summarise(`Non-AMZ Total Sales` = sum(`Non-AMZ Total Sales`))%>%
+#   left_join(Master_DI_List, by=c("master sku"))
+# master_6$DI[which(is.na(master_6$DI))]<-""
+# 
+amz_6<-amz[which((amz$Date<=as.Date(end_date) & amz$Date>=as.Date(start_date))),]
+amz_6<-amz_6%>%
+  group_by(`master sku`, SKUOrder, SKU_stockey_sorted)%>%
+  summarise(`pieces sold`=sum(`Ordered Units`))%>%
+  left_join(df_indoor_4_amz, by=c("SKUOrder" = "skuorder"))%>%
+  left_join(cdf_amz, by=c("SKU_stockey_sorted"))%>%
+  mutate(online_days = day_Jun)%>%
+  mutate_at(c("cdf"), ~replace_na("80-100%"))
+loop_a<-which(is.na(amz_6$day_Jun))
+for (i in loop_a){
+  amz_6$day_Jun[i] = df_indoor_4_amz_add$day_Jun[which(df_indoor_4_amz_add$skuorder==amz_6$SKUOrder[i])[1]]
+  amz_6$Jun[i] = df_indoor_4_amz_add$Jun[which(df_indoor_4_amz_add$skuorder==amz_6$SKUOrder[i])[1]]
+}
+  
+weekly_6<-amz_6%>%
+  mutate(`AMZ Ordered Units` = 
+           ifelse(cdf == "0-20%", ifelse(online_days>=26, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*6*4.285714,`pieces sold`/online_days*5*4.285714)),
+                  ifelse(cdf=="20-40%", ifelse(online_days>=24, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5.5*4.285714,`pieces sold`/online_days*4.5*4.285714)),
+                         ifelse(cdf=="40-60%", ifelse(online_days>=22, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5*4.285714,`pieces sold`/online_days*4*4.285714)),
+                                ifelse(cdf=="60-80%", ifelse(online_days>=20, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*4.5*4.285714,`pieces sold`/online_days*3.5*4.285714)),`pieces sold`
+                                       )))))
+# weekly_6$percent[which(is.na(weekly_6$percent))]<-1
+# weekly_6$DI[which(is.na(weekly_6$DI))]<-""
+# 
+# for (i in 1:nrow(weekly_6)){
+#   if(weekly_6$DI[i] == "DI"){
+#     weekly_6$percent[i] = min(0.3, weekly_6$percent[i])
+#   }
+# }
+amz_Jun<-weekly_6%>%
+  left_join(mastersku_c3, by=c("master sku"))%>%
+  left_join(mastersku_c32, by=c("master sku"))%>%
+  mutate(C32 = ifelse(Category3 == "CHRISTMAS DECORATION", "XMAS",ifelse(Category3 == "BEAN BAG", "Beanbag", C32)))%>%
+  mutate(C32 = ifelse(C32 %in% season_in$Category, C32, "Normal"))%>%
+  left_join(season_in, by=c("C32" = "Category"))%>%
+  mutate(`AMZ Yearly Weighted Sales` = 1 * `AMZ Ordered Units` / Jun_sea * Jun)%>%
+  select(`master sku`, `AMZ Ordered Units`, `AMZ Yearly Weighted Sales`, SKU_stockey_sorted)
+
+amz_Jun_sku_stockey<-amz_Jun%>%
+  group_by(SKU_stockey_sorted)%>%
+  summarise(`AMZ Jun Weighted Sales` = sum(`AMZ Yearly Weighted Sales`))
+# 
+# total_6_hm <- Master_SKU_in%>%
+#   full_join(weekly_6, by = c("Master SKU" = "master sku"))%>%
+#   full_join(actual_6, by = c("Master SKU" = "master sku"))%>%
+#   mutate(`HM pieces sold` =  ifelse(`SKU count`!=1, `Total Sales`*`HM pcs needed`, `Total Sales`),
+#          `actual_6` = ifelse(`SKU count`!=1, `actual_6`*`HM pcs needed`, `actual_6`))%>%
+#   rename(`SKU pieces sold` = `Total Sales`, )%>%
+#   select(`Master SKU`, `HM stockey`,
+#          `SKU pieces sold`, `HM pieces sold`, actual_6)%>%
+#   mutate(`Master SKU` = as.double(`Master SKU`))%>%
+#   arrange(`Master SKU`)
+# total_6_hm$`HM pieces sold`[which(is.na(total_6_hm$`HM pieces sold`))]<-0
+# total_6_hm$actual_6[which(is.na(total_6_hm$actual_6))]<-0
+# total_6_hm<-total_6_hm%>%
+#   group_by(`HM stockey`)%>%
+#   summarise(Actual_6 = sum(actual_6),
+#     `Forecast_6` = sum(`HM pieces sold`))
+# total_6_hm$`Forecast_6`[which(is.na(total_6_hm$`Forecast_6`))]<-0
+# 
+#  total_6_hm<-total_6_hm%>%
+#    mutate(Jun = Forecast_6 * Jun_in)
+#          Feb_6 = Forecast_6 * Feb_in,
+#          Mar_6 = Forecast_6 * Mar_in,
+#          Apr_6 = Forecast_6 * Apr_in,
+#          May_6 = Forecast_6 * May_in,
+#          Jun_6 = Forecast_6 * Jun_in,
+#          Jul_6 = Forecast_6 * Jul_in,
+#          Aug_6 = Forecast_6 * Aug_in,
+#          Sep_6 = Forecast_6 * Sep_in,
+#          Oct_6 = Forecast_6 * Oct_in,
+#          Nov_6 = Forecast_6 * Nov_in,
+#          Dec_6 = Forecast_6 * Dec_in,)
+```
+
+```{r}
+#Jul
+start_date<-ifelse(max(sales_raw$orderdate)>as.Date(paste0(current_year,"-07-01")), paste0(current_year,"-7-1"), paste0(current_year-1,"-7-1"))
+end_date<-ifelse(max(sales_raw$orderdate)>as.Date(paste0(current_year,"-07-01")), paste0(current_year,"-7-31"), paste0(current_year-1,"-7-31"))
+date_num<-ifelse(max(sales_raw$orderdate)>as.Date(paste0(current_year,"-07-01")), as.numeric(paste0(current_year,"07")), as.numeric(paste0(current_year-1,"07")))
+
+sales_7 = sales_in[which(sales_in$`Order Date`<=as.Date(end_date) & sales_in$`Order Date`>=as.Date(start_date)),]
+sales_7<-sales_7%>%
+  group_by(`SKU_stockey_sorted`,`SKU`,`Merchant Name`)%>%
+  summarise(`pieces sold` = sum(`pieces sold`))
+
+days_7 = days[which(days$inventorymonth<=date_num & days$inventorymonth>=date_num),]
+days_7<-days_7%>%
+  group_by(skuorder,merchantid)%>%
+  summarise(online_days = sum(online_days))
+
+# days_7<-OH_2023_Jul%>%
+#   rename(online_days = Jul_OH)
+
+forecast_7<-sales_7%>%
+  left_join(days_7, by=c("SKU" = "skuorder", "Merchant Name" = "merchantid"))%>%
+  left_join(skutomastersku, by=c("SKU", "Merchant Name"))%>%
+  left_join(DI_List, by=c("SKU"))
+
+
+forecast_7$online_days[which(is.na(forecast_7$online_days))]<-0
+forecast_7$DI[which(is.na(forecast_7$DI))]<-""
+forecast_7 = forecast_7[which(forecast_7$online_days!=0),]
+
+
+forecast_7<-forecast_7%>%
+  left_join(cdf, by=c("SKU_stockey_sorted", "Merchant Name" = "Merchant.Name"))
+forecast_7<-forecast_7%>%
+  mutate(`Non-AMZ Total Sales` = 
+           ifelse(cdf == "0-20%", ifelse(online_days>=27, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*6*4.428571,`pieces sold`/online_days*5*4.428571)),
+                  ifelse(cdf=="20-40%", ifelse(online_days>=25, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5.5*4.428571,`pieces sold`/online_days*4.5*4.428571)),
+                         ifelse(cdf=="40-60%", ifelse(online_days>=23, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5*4.428571,`pieces sold`/online_days*4*4.428571)),
+                                ifelse(cdf=="60-80%", ifelse(online_days>=20, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*4.5*4.428571,`pieces sold`/online_days*3.5*4.428571)),`pieces sold`
+                                       )))))
+
+forecast_7_new<-forecast_7%>%
+  left_join(df_indoor_4, by=c("SKU" = "skuorder", "Merchant Name" = "merchantid"))%>%
+  select(SKU_stockey_sorted, `Merchant Name`, `master sku`, DI, `Non-AMZ Total Sales`, Jul)%>%
+  left_join(mastersku_c3, by=c("master sku"))%>%
+  left_join(mastersku_c32, by=c("master sku"))%>%
+  mutate(C32 = ifelse(Category3 == "CHRISTMAS DECORATION", "XMAS",ifelse(Category3 == "BEAN BAG", "Beanbag", C32)))%>%
+  mutate(C32 = ifelse(C32 %in% season_in$Category, C32, "Normal"))%>%
+  left_join(season_in, by=c("C32" = "Category"))%>%
+  mutate(Jul_yearly = `Non-AMZ Total Sales`/Jul_sea)
+forecast_7_new$Jul[which(is.na(forecast_7_new$Jul))]<-Jul
+forecast_7_new<-forecast_7_new%>%
+  mutate(Jul_weighted = Jul * Jul_yearly)%>%
+  group_by(SKU_stockey_sorted, `Merchant Name`)%>%
+  summarise(Jul_weighted = sum(Jul_weighted))
+
+
+# master_7<-forecast_7%>%
+#   group_by(`master sku`)%>%
+#   summarise(`Non-AMZ Total Sales` = sum(`Non-AMZ Total Sales`))%>%
+#   left_join(Master_DI_List, by=c("master sku"))
+# master_7$DI[which(is.na(master_7$DI))]<-""
+# 
+amz_7<-amz[which((amz$Date<=as.Date(end_date) & amz$Date>=as.Date(start_date))),]
+amz_7<-amz_7%>%
+  group_by(`master sku`, SKUOrder, SKU_stockey_sorted)%>%
+  summarise(`pieces sold`=sum(`Ordered Units`))%>%
+  left_join(df_indoor_4_amz, by=c("SKUOrder" = "skuorder"))%>%
+  left_join(cdf_amz, by=c("SKU_stockey_sorted"))%>%
+  mutate(online_days = day_Jul)%>%
+  mutate_at(c("cdf"), ~replace_na("80-100%"))
+loop_a<-which(is.na(amz_7$day_Jul))
+for (i in loop_a){
+  amz_7$day_Jul[i] = df_indoor_4_amz_add$day_Jul[which(df_indoor_4_amz_add$skuorder==amz_7$SKUOrder[i])[1]]
+  amz_7$Jul[i] = df_indoor_4_amz_add$Jul[which(df_indoor_4_amz_add$skuorder==amz_7$SKUOrder[i])[1]]
+}
+  
+weekly_7<-amz_7%>%
+  mutate(`AMZ Ordered Units` = 
+           ifelse(cdf == "0-20%", ifelse(online_days>=27, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*6*4.428571,`pieces sold`/online_days*5*4.428571)),
+                  ifelse(cdf=="20-40%", ifelse(online_days>=25, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5.5*4.428571,`pieces sold`/online_days*4.5*4.428571)),
+                         ifelse(cdf=="40-60%", ifelse(online_days>=23, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5*4.428571,`pieces sold`/online_days*4*4.428571)),
+                                ifelse(cdf=="60-80%", ifelse(online_days>=20, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*4.5*4.428571,`pieces sold`/online_days*3.5*4.428571)),`pieces sold`
+                                       )))))
+# weekly_7$percent[which(is.na(weekly_7$percent))]<-1
+# weekly_7$DI[which(is.na(weekly_7$DI))]<-""
+# 
+# for (i in 1:nrow(weekly_7)){
+#   if(weekly_7$DI[i] == "DI"){
+#     weekly_7$percent[i] = min(0.3, weekly_7$percent[i])
+#   }
+# }
+amz_Jul<-weekly_7%>%
+  left_join(mastersku_c3, by=c("master sku"))%>%
+  left_join(mastersku_c32, by=c("master sku"))%>%
+  mutate(C32 = ifelse(Category3 == "CHRISTMAS DECORATION", "XMAS",ifelse(Category3 == "BEAN BAG", "Beanbag", C32)))%>%
+  mutate(C32 = ifelse(C32 %in% season_in$Category, C32, "Normal"))%>%
+  left_join(season_in, by=c("C32" = "Category"))%>%
+  mutate(`AMZ Yearly Weighted Sales` = 1 * `AMZ Ordered Units` / Jul_sea * Jul)%>%
+  select(`master sku`, `AMZ Ordered Units`, `AMZ Yearly Weighted Sales`, SKU_stockey_sorted)
+
+amz_Jul_sku_stockey<-amz_Jul%>%
+  group_by(SKU_stockey_sorted)%>%
+  summarise(`AMZ Jul Weighted Sales` = sum(`AMZ Yearly Weighted Sales`))
+# 
+# total_7_hm <- Master_SKU_in%>%
+#   full_join(weekly_7, by = c("Master SKU" = "master sku"))%>%
+#   full_join(actual_7, by = c("Master SKU" = "master sku"))%>%
+#   mutate(`HM pieces sold` =  ifelse(`SKU count`!=1, `Total Sales`*`HM pcs needed`, `Total Sales`),
+#          `actual_7` = ifelse(`SKU count`!=1, `actual_7`*`HM pcs needed`, `actual_7`))%>%
+#   rename(`SKU pieces sold` = `Total Sales`, )%>%
+#   select(`Master SKU`, `HM stockey`,
+#          `SKU pieces sold`, `HM pieces sold`, actual_7)%>%
+#   mutate(`Master SKU` = as.double(`Master SKU`))%>%
+#   arrange(`Master SKU`)
+# total_7_hm$`HM pieces sold`[which(is.na(total_7_hm$`HM pieces sold`))]<-0
+# total_7_hm$actual_7[which(is.na(total_7_hm$actual_7))]<-0
+# total_7_hm<-total_7_hm%>%
+#   group_by(`HM stockey`)%>%
+#   summarise(Actual_7 = sum(actual_7),
+#     `Forecast_7` = sum(`HM pieces sold`))
+# total_7_hm$`Forecast_7`[which(is.na(total_7_hm$`Forecast_7`))]<-0
+# 
+#  total_7_hm<-total_7_hm%>%
+#    mutate(Jul = Forecast_7 * Jul_in)
+#          Feb_7 = Forecast_7 * Feb_in,
+#          Mar_7 = Forecast_7 * Mar_in,
+#          Apr_7 = Forecast_7 * Apr_in,
+#          May_7 = Forecast_7 * May_in,
+#          Jun_7 = Forecast_7 * Jun_in,
+#          Jul_7 = Forecast_7 * Jul_in,
+#          Aug_7 = Forecast_7 * Aug_in,
+#          Sep_7 = Forecast_7 * Sep_in,
+#          Oct_7 = Forecast_7 * Oct_in,
+#          Nov_7 = Forecast_7 * Nov_in,
+#          Dec_7 = Forecast_7 * Dec_in,)
+```
+
+```{r}
+#Aug
+start_date<-ifelse(max(sales_raw$orderdate)>as.Date(paste0(current_year,"-08-01")), paste0(current_year,"-8-1"), paste0(current_year-1,"-8-1"))
+end_date<-ifelse(max(sales_raw$orderdate)>as.Date(paste0(current_year,"-08-01")), paste0(current_year,"-8-31"), paste0(current_year-1,"-8-31"))
+date_num<-ifelse(max(sales_raw$orderdate)>as.Date(paste0(current_year,"-08-01")), as.numeric(paste0(current_year,"08")), as.numeric(paste0(current_year-1,"08")))
+
+sales_8 = sales_in[which(sales_in$`Order Date`<=as.Date(end_date) & sales_in$`Order Date`>=as.Date(start_date)),]
+sales_8<-sales_8%>%
+  group_by(`SKU_stockey_sorted`,`SKU`,`Merchant Name`)%>%
+  summarise(`pieces sold` = sum(`pieces sold`))
+
+days_8 = days[which(days$inventorymonth<=date_num & days$inventorymonth>=date_num),]
+days_8<-days_8%>%
+  group_by(skuorder,merchantid)%>%
+  summarise(online_days = sum(online_days))
+
+# days_8<-OH_2023_Aug%>%
+#   rename(online_days = Aug_OH)
+
+forecast_8<-sales_8%>%
+  left_join(days_8, by=c("SKU" = "skuorder", "Merchant Name" = "merchantid"))%>%
+  left_join(skutomastersku, by=c("SKU", "Merchant Name"))%>%
+  left_join(DI_List, by=c("SKU"))
+
+
+forecast_8$online_days[which(is.na(forecast_8$online_days))]<-0
+forecast_8$DI[which(is.na(forecast_8$DI))]<-""
+forecast_8 = forecast_8[which(forecast_8$online_days!=0),]
+
+
+forecast_8<-forecast_8%>%
+  left_join(cdf, by=c("SKU_stockey_sorted", "Merchant Name" = "Merchant.Name"))
+forecast_8<-forecast_8%>%
+  mutate(`Non-AMZ Total Sales` = 
+           ifelse(cdf == "0-20%", ifelse(online_days>=27, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*6*4.428571,`pieces sold`/online_days*5*4.428571)),
+                  ifelse(cdf=="20-40%", ifelse(online_days>=25, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5.5*4.428571,`pieces sold`/online_days*4.5*4.428571)),
+                         ifelse(cdf=="40-60%", ifelse(online_days>=23, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5*4.428571,`pieces sold`/online_days*4*4.428571)),
+                                ifelse(cdf=="60-80%", ifelse(online_days>=20, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*4.5*4.428571,`pieces sold`/online_days*3.5*4.428571)),`pieces sold`
+                                       )))))
+
+forecast_8_new<-forecast_8%>%
+  left_join(df_indoor_4, by=c("SKU" = "skuorder", "Merchant Name" = "merchantid"))%>%
+  select(SKU_stockey_sorted, `Merchant Name`, `master sku`, DI, `Non-AMZ Total Sales`, Aug)%>%
+  left_join(mastersku_c3, by=c("master sku"))%>%
+  left_join(mastersku_c32, by=c("master sku"))%>%
+  mutate(C32 = ifelse(Category3 == "CHRISTMAS DECORATION", "XMAS",ifelse(Category3 == "BEAN BAG", "Beanbag", C32)))%>%
+  mutate(C32 = ifelse(C32 %in% season_in$Category, C32, "Normal"))%>%
+  left_join(season_in, by=c("C32" = "Category"))%>%
+  mutate(Aug_yearly = `Non-AMZ Total Sales`/Aug_sea)
+forecast_8_new$Aug[which(is.na(forecast_8_new$Aug))]<-Aug
+forecast_8_new<-forecast_8_new%>%
+  mutate(Aug_weighted = Aug * Aug_yearly)%>%
+  group_by(SKU_stockey_sorted, `Merchant Name`)%>%
+  summarise(Aug_weighted = sum(Aug_weighted))
+
+# master_8<-forecast_8%>%
+#   group_by(`master sku`)%>%
+#   summarise(`Non-AMZ Total Sales` = sum(`Non-AMZ Total Sales`))%>%
+#   left_join(Master_DI_List, by=c("master sku"))
+# master_8$DI[which(is.na(master_8$DI))]<-""
+# 
+amz_8<-amz[which((amz$Date<=as.Date(end_date) & amz$Date>=as.Date(start_date))),]
+amz_8<-amz_8%>%
+  group_by(`master sku`, SKUOrder, SKU_stockey_sorted)%>%
+  summarise(`pieces sold`=sum(`Ordered Units`))%>%
+  left_join(df_indoor_4_amz, by=c("SKUOrder" = "skuorder"))%>%
+  left_join(cdf_amz, by=c("SKU_stockey_sorted"))%>%
+  mutate(online_days = day_Aug)%>%
+  mutate_at(c("cdf"), ~replace_na("80-100%"))
+loop_a<-which(is.na(amz_8$day_Aug))
+for (i in loop_a){
+  amz_8$day_Aug[i] = df_indoor_4_amz_add$day_Aug[which(df_indoor_4_amz_add$skuorder==amz_8$SKUOrder[i])[1]]
+  amz_8$Aug[i] = df_indoor_4_amz_add$Aug[which(df_indoor_4_amz_add$skuorder==amz_8$SKUOrder[i])[1]]
+}
+  
+weekly_8<-amz_8%>%
+  mutate(`AMZ Ordered Units` = 
+           ifelse(cdf == "0-20%", ifelse(online_days>=27, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*6*4.428571,`pieces sold`/online_days*5*4.428571)),
+                  ifelse(cdf=="20-40%", ifelse(online_days>=25, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5.5*4.428571,`pieces sold`/online_days*4.5*4.428571)),
+                         ifelse(cdf=="40-60%", ifelse(online_days>=23, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5*4.428571,`pieces sold`/online_days*4*4.428571)),
+                                ifelse(cdf=="60-80%", ifelse(online_days>=20, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*4.5*4.428571,`pieces sold`/online_days*3.5*4.428571)),`pieces sold`
+                                       )))))
+# weekly_8$percent[which(is.na(weekly_8$percent))]<-1
+# weekly_8$DI[which(is.na(weekly_8$DI))]<-""
+# 
+# for (i in 1:nrow(weekly_8)){
+#   if(weekly_8$DI[i] == "DI"){
+#     weekly_8$percent[i] = min(0.3, weekly_8$percent[i])
+#   }
+# }
+amz_Aug<-weekly_8%>%
+  left_join(mastersku_c3, by=c("master sku"))%>%
+  left_join(mastersku_c32, by=c("master sku"))%>%
+  mutate(C32 = ifelse(Category3 == "CHRISTMAS DECORATION", "XMAS",ifelse(Category3 == "BEAN BAG", "Beanbag", C32)))%>%
+  mutate(C32 = ifelse(C32 %in% season_in$Category, C32, "Normal"))%>%
+  left_join(season_in, by=c("C32" = "Category"))%>%
+  mutate(`AMZ Yearly Weighted Sales` = 1 * `AMZ Ordered Units` / Aug_sea * Aug)%>%
+  select(`master sku`, `AMZ Ordered Units`, `AMZ Yearly Weighted Sales`, SKU_stockey_sorted)
+
+amz_Aug_sku_stockey<-amz_Aug%>%
+  group_by(SKU_stockey_sorted)%>%
+  summarise(`AMZ Aug Weighted Sales` = sum(`AMZ Yearly Weighted Sales`))
+# 
+# total_8_hm <- Master_SKU_in%>%
+#   full_join(weekly_8, by = c("Master SKU" = "master sku"))%>%
+#   full_join(actual_8, by = c("Master SKU" = "master sku"))%>%
+#   mutate(`HM pieces sold` =  ifelse(`SKU count`!=1, `Total Sales`*`HM pcs needed`, `Total Sales`),
+#          `actual_8` = ifelse(`SKU count`!=1, `actual_8`*`HM pcs needed`, `actual_8`))%>%
+#   rename(`SKU pieces sold` = `Total Sales`, )%>%
+#   select(`Master SKU`, `HM stockey`,
+#          `SKU pieces sold`, `HM pieces sold`, actual_8)%>%
+#   mutate(`Master SKU` = as.double(`Master SKU`))%>%
+#   arrange(`Master SKU`)
+# total_8_hm$`HM pieces sold`[which(is.na(total_8_hm$`HM pieces sold`))]<-0
+# total_8_hm$actual_8[which(is.na(total_8_hm$actual_8))]<-0
+# total_8_hm<-total_8_hm%>%
+#   group_by(`HM stockey`)%>%
+#   summarise(Actual_8 = sum(actual_8),
+#     `Forecast_8` = sum(`HM pieces sold`))
+# total_8_hm$`Forecast_8`[which(is.na(total_8_hm$`Forecast_8`))]<-0
+# 
+#  total_8_hm<-total_8_hm%>%
+#    mutate(Aug = Forecast_8 * Aug_in)
+#          Feb_8 = Forecast_8 * Feb_in,
+#          Mar_8 = Forecast_8 * Mar_in,
+#          Apr_8 = Forecast_8 * Apr_in,
+#          May_8 = Forecast_8 * May_in,
+#          Jun_8 = Forecast_8 * Jun_in,
+#          Jul_8 = Forecast_8 * Jul_in,
+#          Aug_8 = Forecast_8 * Aug_in,
+#          Sep_8 = Forecast_8 * Sep_in,
+#          Oct_8 = Forecast_8 * Oct_in,
+#          Nov_8 = Forecast_8 * Nov_in,
+#          Dec_8 = Forecast_8 * Dec_in,)
+```
+
+```{r}
+#Sep
+start_date<-ifelse(max(sales_raw$orderdate)>as.Date(paste0(current_year,"-09-01")), paste0(current_year,"-9-1"), paste0(current_year-1,"-9-1"))
+end_date<-ifelse(max(sales_raw$orderdate)>as.Date(paste0(current_year,"-09-01")), paste0(current_year,"-9-30"), paste0(current_year-1,"-9-30"))
+date_num<-ifelse(max(sales_raw$orderdate)>as.Date(paste0(current_year,"-09-01")), as.numeric(paste0(current_year,"09")), as.numeric(paste0(current_year-1,"09")))
+
+sales_9 = sales_in[which(sales_in$`Order Date`<=as.Date(end_date) & sales_in$`Order Date`>=as.Date(start_date)),]
+sales_9<-sales_9%>%
+  group_by(`SKU_stockey_sorted`,`SKU`,`Merchant Name`)%>%
+  summarise(`pieces sold` = sum(`pieces sold`))
+
+days_9 = days[which(days$inventorymonth<=date_num & days$inventorymonth>=date_num),]
+days_9<-days_9%>%
+  group_by(skuorder,merchantid)%>%
+  summarise(online_days = sum(online_days))
+
+forecast_9<-sales_9%>%
+  left_join(days_9, by=c("SKU" = "skuorder", "Merchant Name" = "merchantid"))%>%
+  left_join(skutomastersku, by=c("SKU", "Merchant Name"))%>%
+  left_join(DI_List, by=c("SKU"))
+
+
+forecast_9$online_days[which(is.na(forecast_9$online_days))]<-0
+forecast_9$DI[which(is.na(forecast_9$DI))]<-""
+forecast_9 = forecast_9[which(forecast_9$online_days!=0),]
+
+
+forecast_9<-forecast_9%>%
+  left_join(cdf, by=c("SKU_stockey_sorted", "Merchant Name" = "Merchant.Name"))
+forecast_9<-forecast_9%>%
+  mutate(`Non-AMZ Total Sales` = 
+           ifelse(cdf == "0-20%", ifelse(online_days>=26, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*6*4.285714,`pieces sold`/online_days*5*4.285714)),
+                  ifelse(cdf=="20-40%", ifelse(online_days>=24, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5.5*4.285714,`pieces sold`/online_days*4.5*4.285714)),
+                         ifelse(cdf=="40-60%", ifelse(online_days>=22, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5*4.285714,`pieces sold`/online_days*4*4.285714)),
+                                ifelse(cdf=="60-80%", ifelse(online_days>=20, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*4.5*4.285714,`pieces sold`/online_days*3.5*4.285714)),`pieces sold`
+                                       )))))
+
+forecast_9_new<-forecast_9%>%
+  left_join(df_indoor_4, by=c("SKU" = "skuorder", "Merchant Name" = "merchantid"))%>%
+  select(SKU_stockey_sorted, `Merchant Name`, `master sku`, DI, `Non-AMZ Total Sales`, Sep)%>%
+  left_join(mastersku_c3, by=c("master sku"))%>%
+  left_join(mastersku_c32, by=c("master sku"))%>%
+  mutate(C32 = ifelse(Category3 == "CHRISTMAS DECORATION", "XMAS",ifelse(Category3 == "BEAN BAG", "Beanbag", C32)))%>%
+  mutate(C32 = ifelse(C32 %in% season_in$Category, C32, "Normal"))%>%
+  left_join(season_in, by=c("C32" = "Category"))%>%
+  mutate(Sep_yearly = `Non-AMZ Total Sales`/Sep_sea)
+forecast_9_new$Sep[which(is.na(forecast_9_new$Sep))]<-Sep
+forecast_9_new<-forecast_9_new%>%
+  mutate(Sep_weighted = Sep * Sep_yearly)%>%
+  group_by(SKU_stockey_sorted, `Merchant Name`)%>%
+  summarise(Sep_weighted = sum(Sep_weighted))
+
+# master_9<-forecast_9%>%
+#   group_by(`master sku`)%>%
+#   summarise(`Non-AMZ Total Sales` = sum(`Non-AMZ Total Sales`))%>%
+#   left_join(Master_DI_List, by=c("master sku"))
+# master_9$DI[which(is.na(master_9$DI))]<-""
+# 
+amz_9<-amz[which((amz$Date<=as.Date(end_date) & amz$Date>=as.Date(start_date))),]
+amz_9<-amz_9%>%
+  group_by(`master sku`, SKUOrder, SKU_stockey_sorted)%>%
+  summarise(`pieces sold`=sum(`Ordered Units`))%>%
+  left_join(df_indoor_4_amz, by=c("SKUOrder" = "skuorder"))%>%
+  left_join(cdf_amz, by=c("SKU_stockey_sorted"))%>%
+  mutate(online_days = day_Sep)%>%
+  mutate_at(c("cdf"), ~replace_na("80-100%"))
+loop_a<-which(is.na(amz_9$day_Sep))
+for (i in loop_a){
+  amz_9$day_Sep[i] = df_indoor_4_amz_add$day_Sep[which(df_indoor_4_amz_add$skuorder==amz_9$SKUOrder[i])[1]]
+  amz_9$Sep[i] = df_indoor_4_amz_add$Sep[which(df_indoor_4_amz_add$skuorder==amz_9$SKUOrder[i])[1]]
+}
+  
+weekly_9<-amz_9%>%
+  mutate(`AMZ Ordered Units` = 
+           ifelse(cdf == "0-20%", ifelse(online_days>=26, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*6*4.285714,`pieces sold`/online_days*5*4.285714)),
+                  ifelse(cdf=="20-40%", ifelse(online_days>=24, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5.5*4.285714,`pieces sold`/online_days*4.5*4.285714)),
+                         ifelse(cdf=="40-60%", ifelse(online_days>=22, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5*4.285714,`pieces sold`/online_days*4*4.285714)),
+                                ifelse(cdf=="60-80%", ifelse(online_days>=20, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*4.5*4.285714,`pieces sold`/online_days*3.5*4.285714)),`pieces sold`
+                                       )))))
+# weekly_9$percent[which(is.na(weekly_9$percent))]<-1
+# weekly_9$DI[which(is.na(weekly_9$DI))]<-""
+# 
+# for (i in 1:nrow(weekly_9)){
+#   if(weekly_9$DI[i] == "DI"){
+#     weekly_9$percent[i] = min(0.3, weekly_9$percent[i])
+#   }
+# }
+amz_Sep<-weekly_9%>%
+  left_join(mastersku_c3, by=c("master sku"))%>%
+  left_join(mastersku_c32, by=c("master sku"))%>%
+  mutate(C32 = ifelse(Category3 == "CHRISTMAS DECORATION", "XMAS",ifelse(Category3 == "BEAN BAG", "Beanbag", C32)))%>%
+  mutate(C32 = ifelse(C32 %in% season_in$Category, C32, "Normal"))%>%
+  left_join(season_in, by=c("C32" = "Category"))%>%
+  mutate(`AMZ Yearly Weighted Sales` = 1 * `AMZ Ordered Units` / Sep_sea * Sep)%>%
+  select(`master sku`, `AMZ Ordered Units`, `AMZ Yearly Weighted Sales`, SKU_stockey_sorted)
+
+amz_Sep_sku_stockey<-amz_Sep%>%
+  group_by(SKU_stockey_sorted)%>%
+  summarise(`AMZ Sep Weighted Sales` = sum(`AMZ Yearly Weighted Sales`))
+# 
+# total_9_hm <- Master_SKU_in%>%
+#   full_join(weekly_9, by = c("Master SKU" = "master sku"))%>%
+#   full_join(actual_9, by = c("Master SKU" = "master sku"))%>%
+#   mutate(`HM pieces sold` =  ifelse(`SKU count`!=1, `Total Sales`*`HM pcs needed`, `Total Sales`),
+#          `actual_9` = ifelse(`SKU count`!=1, `actual_9`*`HM pcs needed`, `actual_9`))%>%
+#   rename(`SKU pieces sold` = `Total Sales`, )%>%
+#   select(`Master SKU`, `HM stockey`,
+#          `SKU pieces sold`, `HM pieces sold`, actual_9)%>%
+#   mutate(`Master SKU` = as.double(`Master SKU`))%>%
+#   arrange(`Master SKU`)
+# total_9_hm$`HM pieces sold`[which(is.na(total_9_hm$`HM pieces sold`))]<-0
+# total_9_hm$actual_9[which(is.na(total_9_hm$actual_9))]<-0
+# total_9_hm<-total_9_hm%>%
+#   group_by(`HM stockey`)%>%
+#   summarise(Actual_9 = sum(actual_9),
+#     `Forecast_9` = sum(`HM pieces sold`))
+# total_9_hm$`Forecast_9`[which(is.na(total_9_hm$`Forecast_9`))]<-0
+# 
+#  total_9_hm<-total_9_hm%>%
+#    mutate(Sep = Forecast_9 * Sep_in)
+#          Feb_9 = Forecast_9 * Feb_in,
+#          Mar_9 = Forecast_9 * Mar_in,
+#          Apr_9 = Forecast_9 * Apr_in,
+#          May_9 = Forecast_9 * May_in,
+#          Jun_9 = Forecast_9 * Jun_in,
+#          Jul_9 = Forecast_9 * Jul_in,
+#          Aug_9 = Forecast_9 * Aug_in,
+#          Sep_9 = Forecast_9 * Sep_in,
+#          Oct_9 = Forecast_9 * Oct_in,
+#          Nov_9 = Forecast_9 * Nov_in,
+#          Dec_9 = Forecast_9 * Dec_in,)
+```
+
+```{r}
+#Oct
+start_date<-ifelse(max(sales_raw$orderdate)>as.Date(paste0(current_year,"-10-01")), paste0(current_year,"-10-1"), paste0(current_year-1,"-10-1"))
+end_date<-ifelse(max(sales_raw$orderdate)>as.Date(paste0(current_year,"-10-01")), paste0(current_year,"-10-31"), paste0(current_year-1,"-10-31"))
+date_num<-ifelse(max(sales_raw$orderdate)>as.Date(paste0(current_year,"-10-01")), as.numeric(paste0(current_year,"10")), as.numeric(paste0(current_year-1,"10")))
+
+sales_10 = sales_in[which(sales_in$`Order Date`<=as.Date(end_date) & sales_in$`Order Date`>=as.Date(start_date)),]
+sales_10<-sales_10%>%
+  group_by(`SKU_stockey_sorted`,`SKU`,`Merchant Name`)%>%
+  summarise(`pieces sold` = sum(`pieces sold`))
+
+days_10 = days[which(days$inventorymonth<=date_num & days$inventorymonth>=date_num),]
+days_10<-days_10%>%
+  group_by(skuorder,merchantid)%>%
+  summarise(online_days = sum(online_days))
+
+forecast_10<-sales_10%>%
+  left_join(days_10, by=c("SKU" = "skuorder", "Merchant Name" = "merchantid"))%>%
+  left_join(skutomastersku, by=c("SKU", "Merchant Name"))%>%
+  left_join(DI_List, by=c("SKU"))
+
+
+forecast_10$online_days[which(is.na(forecast_10$online_days))]<-0
+forecast_10$DI[which(is.na(forecast_10$DI))]<-""
+forecast_10 = forecast_10[which(forecast_10$online_days!=0),]
+
+
+forecast_10<-forecast_10%>%
+  left_join(cdf, by=c("SKU_stockey_sorted", "Merchant Name" = "Merchant.Name"))
+forecast_10<-forecast_10%>%
+  mutate(`Non-AMZ Total Sales` = 
+           ifelse(cdf == "0-20%", ifelse(online_days>=27, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*6*4.428571,`pieces sold`/online_days*5*4.428571)),
+                  ifelse(cdf=="20-40%", ifelse(online_days>=25, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5.5*4.428571,`pieces sold`/online_days*4.5*4.428571)),
+                         ifelse(cdf=="40-60%", ifelse(online_days>=23, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5*4.428571,`pieces sold`/online_days*4*4.428571)),
+                                ifelse(cdf=="60-80%", ifelse(online_days>=20, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*4.5*4.428571,`pieces sold`/online_days*3.5*4.428571)),`pieces sold`
+                                       )))))
+
+forecast_10_new<-forecast_10%>%
+  left_join(df_indoor_4, by=c("SKU" = "skuorder", "Merchant Name" = "merchantid"))%>%
+  select(SKU_stockey_sorted, `Merchant Name`, `master sku`, DI, `Non-AMZ Total Sales`, Oct)%>%
+  left_join(mastersku_c3, by=c("master sku"))%>%
+  left_join(mastersku_c32, by=c("master sku"))%>%
+  mutate(C32 = ifelse(Category3 == "CHRISTMAS DECORATION", "XMAS",ifelse(Category3 == "BEAN BAG", "Beanbag", C32)))%>%
+  mutate(C32 = ifelse(C32 %in% season_in$Category, C32, "Normal"))%>%
+  left_join(season_in, by=c("C32" = "Category"))%>%
+  mutate(Oct_yearly = `Non-AMZ Total Sales`/Oct_sea)
+forecast_10_new$Oct[which(is.na(forecast_10_new$Oct))]<-Oct
+forecast_10_new<-forecast_10_new%>%
+  mutate(Oct_weighted = Oct * Oct_yearly)%>%
+  group_by(SKU_stockey_sorted, `Merchant Name`)%>%
+  summarise(Oct_weighted = sum(Oct_weighted))
+
+
+# master_10<-forecast_10%>%
+#   group_by(`master sku`)%>%
+#   summarise(`Non-AMZ Total Sales` = sum(`Non-AMZ Total Sales`))%>%
+#   left_join(Master_DI_List, by=c("master sku"))
+# master_10$DI[which(is.na(master_10$DI))]<-""
+# 
+amz_10<-amz[which((amz$Date<=as.Date(end_date) & amz$Date>=as.Date(start_date))),]
+amz_10<-amz_10%>%
+  group_by(`master sku`, SKUOrder, SKU_stockey_sorted)%>%
+  summarise(`pieces sold`=sum(`Ordered Units`))%>%
+  left_join(df_indoor_4_amz, by=c("SKUOrder" = "skuorder"))%>%
+  left_join(cdf_amz, by=c("SKU_stockey_sorted"))%>%
+  mutate(online_days = day_Oct)%>%
+  mutate_at(c("cdf"), ~replace_na("80-100%"))
+loop_a<-which(is.na(amz_10$day_Oct))
+for (i in loop_a){
+  amz_10$day_Oct[i] = df_indoor_4_amz_add$day_Oct[which(df_indoor_4_amz_add$skuorder==amz_10$SKUOrder[i])[1]]
+  amz_10$Oct[i] = df_indoor_4_amz_add$Oct[which(df_indoor_4_amz_add$skuorder==amz_10$SKUOrder[i])[1]]
+}
+  
+weekly_10<-amz_10%>%
+  mutate(`AMZ Ordered Units` = 
+           ifelse(cdf == "0-20%", ifelse(online_days>=27, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*6*4.428571,`pieces sold`/online_days*5*4.428571)),
+                  ifelse(cdf=="20-40%", ifelse(online_days>=25, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5.5*4.428571,`pieces sold`/online_days*4.5*4.428571)),
+                         ifelse(cdf=="40-60%", ifelse(online_days>=23, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5*4.428571,`pieces sold`/online_days*4*4.428571)),
+                                ifelse(cdf=="60-80%", ifelse(online_days>=20, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*4.5*4.428571,`pieces sold`/online_days*3.5*4.428571)),`pieces sold`
+                                       )))))
+# weekly_10$percent[which(is.na(weekly_10$percent))]<-1
+# weekly_10$DI[which(is.na(weekly_10$DI))]<-""
+# 
+# for (i in 1:nrow(weekly_10)){
+#   if(weekly_10$DI[i] == "DI"){
+#     weekly_10$percent[i] = min(0.3, weekly_10$percent[i])
+#   }
+# }
+amz_Oct<-weekly_10%>%
+  left_join(mastersku_c3, by=c("master sku"))%>%
+  left_join(mastersku_c32, by=c("master sku"))%>%
+  mutate(C32 = ifelse(Category3 == "CHRISTMAS DECORATION", "XMAS",ifelse(Category3 == "BEAN BAG", "Beanbag", C32)))%>%
+  mutate(C32 = ifelse(C32 %in% season_in$Category, C32, "Normal"))%>%
+  left_join(season_in, by=c("C32" = "Category"))%>%
+  mutate(`AMZ Yearly Weighted Sales` = 1 * `AMZ Ordered Units` / Oct_sea * Oct)%>%
+  select(`master sku`, `AMZ Ordered Units`, `AMZ Yearly Weighted Sales`, SKU_stockey_sorted)
+
+amz_Oct_sku_stockey<-amz_Oct%>%
+  group_by(SKU_stockey_sorted)%>%
+  summarise(`AMZ Oct Weighted Sales` = sum(`AMZ Yearly Weighted Sales`))
+# 
+# total_10_hm <- Master_SKU_in%>%
+#   full_join(weekly_10, by = c("Master SKU" = "master sku"))%>%
+#   full_join(actual_10, by = c("Master SKU" = "master sku"))%>%
+#   mutate(`HM pieces sold` =  ifelse(`SKU count`!=1, `Total Sales`*`HM pcs needed`, `Total Sales`),
+#          `actual_10` = ifelse(`SKU count`!=1, `actual_10`*`HM pcs needed`, `actual_10`))%>%
+#   rename(`SKU pieces sold` = `Total Sales`, )%>%
+#   select(`Master SKU`, `HM stockey`,
+#          `SKU pieces sold`, `HM pieces sold`, actual_10)%>%
+#   mutate(`Master SKU` = as.double(`Master SKU`))%>%
+#   arrange(`Master SKU`)
+# total_10_hm$`HM pieces sold`[which(is.na(total_10_hm$`HM pieces sold`))]<-0
+# total_10_hm$actual_10[which(is.na(total_10_hm$actual_10))]<-0
+# total_10_hm<-total_10_hm%>%
+#   group_by(`HM stockey`)%>%
+#   summarise(Actual_10 = sum(actual_10),
+#     `Forecast_10` = sum(`HM pieces sold`))
+# total_10_hm$`Forecast_10`[which(is.na(total_10_hm$`Forecast_10`))]<-0
+# 
+#  total_10_hm<-total_10_hm%>%
+#    mutate(Oct = Forecast_10 * Oct_in)
+#          Feb_10 = Forecast_10 * Feb_in,
+#          Mar_10 = Forecast_10 * Mar_in,
+#          Apr_10 = Forecast_10 * Apr_in,
+#          May_10 = Forecast_10 * May_in,
+#          Jun_10 = Forecast_10 * Jun_in,
+#          Jul_10 = Forecast_10 * Jul_in,
+#          Aug_10 = Forecast_10 * Aug_in,
+#          Sep_10 = Forecast_10 * Sep_in,
+#          Oct_10 = Forecast_10 * Oct_in,
+#          Nov_10 = Forecast_10 * Nov_in,
+#          Dec_10 = Forecast_10 * Dec_in,)
+```
+
+```{r}
+#Nov
+start_date<-ifelse(max(sales_raw$orderdate)>as.Date(paste0(current_year,"-11-01")), paste0(current_year,"-11-1"), paste0(current_year-1,"-11-1"))
+end_date<-ifelse(max(sales_raw$orderdate)>as.Date(paste0(current_year,"-11-01")), paste0(current_year,"-11-30"), paste0(current_year-1,"-11-30"))
+date_num<-ifelse(max(sales_raw$orderdate)>as.Date(paste0(current_year,"-11-01")), as.numeric(paste0(current_year,"11")), as.numeric(paste0(current_year-1,"11")))
+
+sales_11 = sales_in[which(sales_in$`Order Date`<=as.Date(end_date) & sales_in$`Order Date`>=as.Date(start_date)),]
+sales_11<-sales_11%>%
+  group_by(`SKU_stockey_sorted`,`SKU`,`Merchant Name`)%>%
+  summarise(`pieces sold` = sum(`pieces sold`))
+
+days_11 = days[which(days$inventorymonth<=date_num & days$inventorymonth>=date_num),]
+days_11<-days_11%>%
+  group_by(skuorder,merchantid)%>%
+  summarise(online_days = sum(online_days))
+
+forecast_11<-sales_11%>%
+  left_join(days_11, by=c("SKU" = "skuorder", "Merchant Name" = "merchantid"))%>%
+  left_join(skutomastersku, by=c("SKU", "Merchant Name"))%>%
+  left_join(DI_List, by=c("SKU"))
+
+
+forecast_11$online_days[which(is.na(forecast_11$online_days))]<-0
+forecast_11$DI[which(is.na(forecast_11$DI))]<-""
+forecast_11 = forecast_11[which(forecast_11$online_days!=0),]
+
+
+forecast_11<-forecast_11%>%
+  left_join(cdf, by=c("SKU_stockey_sorted", "Merchant Name" = "Merchant.Name"))
+forecast_11<-forecast_11%>%
+  mutate(`Non-AMZ Total Sales` = 
+           ifelse(cdf == "0-20%", ifelse(online_days>=26, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*6*4.285714,`pieces sold`/online_days*5*4.285714)),
+                  ifelse(cdf=="20-40%", ifelse(online_days>=24, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5.5*4.285714,`pieces sold`/online_days*4.5*4.285714)),
+                         ifelse(cdf=="40-60%", ifelse(online_days>=22, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5*4.285714,`pieces sold`/online_days*4*4.285714)),
+                                ifelse(cdf=="60-80%", ifelse(online_days>=20, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*4.5*4.285714,`pieces sold`/online_days*3.5*4.285714)),`pieces sold`
+                                       )))))
+
+forecast_11_new<-forecast_11%>%
+  left_join(df_indoor_4, by=c("SKU" = "skuorder", "Merchant Name" = "merchantid"))%>%
+  select(SKU_stockey_sorted, `Merchant Name`, `master sku`, DI, `Non-AMZ Total Sales`, Nov)%>%
+  left_join(mastersku_c3, by=c("master sku"))%>%
+  left_join(mastersku_c32, by=c("master sku"))%>%
+  mutate(C32 = ifelse(Category3 == "CHRISTMAS DECORATION", "XMAS",ifelse(Category3 == "BEAN BAG", "Beanbag", C32)))%>%
+  mutate(C32 = ifelse(C32 %in% season_in$Category, C32, "Normal"))%>%
+  left_join(season_in, by=c("C32" = "Category"))%>%
+  mutate(Nov_yearly = `Non-AMZ Total Sales`/Nov_sea)
+forecast_11_new$Nov[which(is.na(forecast_11_new$Nov))]<-Nov
+forecast_11_new<-forecast_11_new%>%
+  mutate(Nov_weighted = Nov * Nov_yearly)%>%
+  group_by(SKU_stockey_sorted, `Merchant Name`)%>%
+  summarise(Nov_weighted = sum(Nov_weighted))
+
+
+
+# master_11<-actual_11%>%
+#   group_by(`master sku`)%>%
+#   summarise(`Non-AMZ Total Sales` = sum(`actual_11`))%>%
+#   left_join(Master_DI_List, by=c("master sku"))
+
+# master_11<-forecast_11%>%
+#   group_by(`master sku`)%>%
+#   summarise(`Non-AMZ Total Sales` = sum(`Non-AMZ Total Sales`))%>%
+#   left_join(Master_DI_List, by=c("master sku"))
+# 
+# master_11$DI[which(is.na(master_11$DI))]<-""
+# 
+amz_11<-amz[which((amz$Date<=as.Date(end_date) & amz$Date>=as.Date(start_date))),]
+amz_11<-amz_11%>%
+  group_by(`master sku`, SKUOrder, SKU_stockey_sorted)%>%
+  summarise(`pieces sold`=sum(`Ordered Units`))%>%
+  left_join(df_indoor_4_amz, by=c("SKUOrder" = "skuorder"))%>%
+  left_join(cdf_amz, by=c("SKU_stockey_sorted"))%>%
+  mutate(online_days = day_Nov)%>%
+  mutate_at(c("cdf"), ~replace_na("80-100%"))
+loop_a<-which(is.na(amz_11$day_Nov))
+for (i in loop_a){
+  amz_11$day_Nov[i] = df_indoor_4_amz_add$day_Nov[which(df_indoor_4_amz_add$skuorder==amz_11$SKUOrder[i])[1]]
+  amz_11$Nov[i] = df_indoor_4_amz_add$Nov[which(df_indoor_4_amz_add$skuorder==amz_11$SKUOrder[i])[1]]
+}
+  
+weekly_11<-amz_11%>%
+  mutate(`AMZ Ordered Units` = 
+           ifelse(cdf == "0-20%", ifelse(online_days>=26, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*6*4.285714,`pieces sold`/online_days*5*4.285714)),
+                  ifelse(cdf=="20-40%", ifelse(online_days>=24, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5.5*4.285714,`pieces sold`/online_days*4.5*4.285714)),
+                         ifelse(cdf=="40-60%", ifelse(online_days>=22, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5*4.285714,`pieces sold`/online_days*4*4.285714)),
+                                ifelse(cdf=="60-80%", ifelse(online_days>=20, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*4.5*4.285714,`pieces sold`/online_days*3.5*4.285714)),`pieces sold`
+                                       )))))
+# weekly_11$percent[which(is.na(weekly_11$percent))]<-1
+# weekly_11$DI[which(is.na(weekly_11$DI))]<-""
+# 
+# for (i in 1:nrow(weekly_11)){
+#   if(weekly_11$DI[i] == "DI"){
+#     weekly_11$percent[i] = min(0.3, weekly_11$percent[i])
+#   }
+# }
+amz_Nov<-weekly_11%>%
+  left_join(mastersku_c3, by=c("master sku"))%>%
+  left_join(mastersku_c32, by=c("master sku"))%>%
+  mutate(C32 = ifelse(Category3 == "CHRISTMAS DECORATION", "XMAS",ifelse(Category3 == "BEAN BAG", "Beanbag", C32)))%>%
+  mutate(C32 = ifelse(C32 %in% season_in$Category, C32, "Normal"))%>%
+  left_join(season_in, by=c("C32" = "Category"))%>%
+  mutate(`AMZ Yearly Weighted Sales` = 1 * `AMZ Ordered Units` / Nov_sea * Nov)%>%
+  select(`master sku`, `AMZ Ordered Units`, `AMZ Yearly Weighted Sales`, SKU_stockey_sorted)
+
+amz_Nov_sku_stockey<-amz_Nov%>%
+  group_by(SKU_stockey_sorted)%>%
+  summarise(`AMZ Nov Weighted Sales` = sum(`AMZ Yearly Weighted Sales`))
+# 
+# total_11_hm <- Master_SKU_in%>%
+#   full_join(weekly_11, by = c("Master SKU" = "master sku"))%>%
+#   full_join(actual_11, by = c("Master SKU" = "master sku"))%>%
+#   mutate(`HM pieces sold` =  ifelse(`SKU count`!=1, `Total Sales`*`HM pcs needed`, `Total Sales`),
+#          `actual_11` = ifelse(`SKU count`!=1, `actual_11`*`HM pcs needed`, `actual_11`))%>%
+#   rename(`SKU pieces sold` = `Total Sales`, )%>%
+#   select(`Master SKU`, `HM stockey`,
+#          `SKU pieces sold`, `HM pieces sold`, actual_11)%>%
+#   mutate(`Master SKU` = as.double(`Master SKU`))%>%
+#   arrange(`Master SKU`)
+# total_11_hm$`HM pieces sold`[which(is.na(total_11_hm$`HM pieces sold`))]<-0
+# total_11_hm$actual_11[which(is.na(total_11_hm$actual_11))]<-0
+# total_11_hm<-total_11_hm%>%
+#   group_by(`HM stockey`)%>%
+#   summarise(Actual_11 = sum(actual_11),
+#     `Forecast_11` = sum(`HM pieces sold`))
+# total_11_hm$`Forecast_11`[which(is.na(total_11_hm$`Forecast_11`))]<-0
+# 
+#  total_11_hm<-total_11_hm%>%
+#    mutate(Nov = Forecast_11 * Nov_in)
+#          Feb_11 = Forecast_11 * Feb_in,
+#          Mar_11 = Forecast_11 * Mar_in,
+#          Apr_11 = Forecast_11 * Apr_in,
+#          May_11 = Forecast_11 * May_in,
+#          Jun_11 = Forecast_11 * Jun_in,
+#          Jul_11 = Forecast_11 * Jul_in,
+#          Aug_11 = Forecast_11 * Aug_in,
+#          Sep_11 = Forecast_11 * Sep_in,
+#          Oct_11 = Forecast_11 * Oct_in,
+#          Nov_11 = Forecast_11 * Nov_in,
+#          Dec_11 = Forecast_11 * Dec_in,)
+ 
+# total_11_hm <- Master_SKU_in%>%
+#      full_join(weekly_11, by = c("Master SKU" = "master sku"))%>%
+#      mutate(`HM pieces sold` =  ifelse(`SKU count`!=1, `Monthly Sales`*`HM pcs needed`, `Monthly Sales`))%>%
+#      rename(`SKU pieces sold` = `Monthly Sales`, )%>%
+#      select(`Master SKU`, `HM stockey`,
+#             `SKU pieces sold`, `HM pieces sold`)%>%
+#      mutate(`Master SKU` = as.double(`Master SKU`))%>%
+#      arrange(`Master SKU`)
+#  total_11_hm$`HM pieces sold`[which(is.na(total_11_hm$`HM pieces sold`))]<-0
+#  total_11_hm<-total_11_hm%>%
+#      group_by(`HM stockey`)%>%
+#      summarise(`Total_11` = sum(`HM pieces sold`))
+#  total_11_hm$`Total_11`[which(is.na(total_11_hm$`Total_11`))]<-0
+```
+
+```{r}
+#Dec
+start_date<-ifelse(max(sales_raw$orderdate)>as.Date(paste0(current_year,"-12-01")), paste0(current_year,"-12-1"), paste0(current_year-1,"-12-1"))
+end_date<-ifelse(max(sales_raw$orderdate)>as.Date(paste0(current_year,"-12-01")), paste0(current_year,"-12-31"), paste0(current_year-1,"-12-31"))
+date_num<-ifelse(max(sales_raw$orderdate)>as.Date(paste0(current_year,"-12-01")), as.numeric(paste0(current_year,"12")), as.numeric(paste0(current_year-1,"12")))
+
+sales_12 = sales_in[which(sales_in$`Order Date`<=as.Date(end_date) & sales_in$`Order Date`>=as.Date(start_date)),]
+sales_12<-sales_12%>%
+  group_by(`SKU_stockey_sorted`,`SKU`,`Merchant Name`)%>%
+  summarise(`pieces sold` = sum(`pieces sold`))
+
+days_12 = days[which(days$inventorymonth<=date_num & days$inventorymonth>=date_num),]
+days_12<-days_12%>%
+  group_by(skuorder,merchantid)%>%
+  summarise(online_days = sum(online_days))
+
+forecast_12<-sales_12%>%
+  left_join(days_12, by=c("SKU" = "skuorder", "Merchant Name" = "merchantid"))%>%
+  left_join(skutomastersku, by=c("SKU", "Merchant Name"))%>%
+  left_join(DI_List, by=c("SKU"))
+
+
+forecast_12$online_days[which(is.na(forecast_12$online_days))]<-0
+forecast_12$DI[which(is.na(forecast_12$DI))]<-""
+forecast_12 = forecast_12[which(forecast_12$online_days!=0),]
+
+
+forecast_12<-forecast_12%>%
+  left_join(cdf, by=c("SKU_stockey_sorted", "Merchant Name" = "Merchant.Name"))
+forecast_12<-forecast_12%>%
+  mutate(`Non-AMZ Total Sales` = 
+           ifelse(cdf == "0-20%", ifelse(online_days>=27, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*6*4.285714,`pieces sold`/online_days*5*4.285714)),
+                  ifelse(cdf=="20-40%", ifelse(online_days>=25, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5.5*4.285714,`pieces sold`/online_days*4.5*4.285714)),
+                         ifelse(cdf=="40-60%", ifelse(online_days>=23, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5*4.285714,`pieces sold`/online_days*4*4.285714)),
+                                ifelse(cdf=="60-80%", ifelse(online_days>=20, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*4.5*4.285714,`pieces sold`/online_days*3.5*4.285714)),`pieces sold`
+                                       )))))
+
+forecast_12_new<-forecast_12%>%
+  left_join(df_indoor_4, by=c("SKU" = "skuorder", "Merchant Name" = "merchantid"))%>%
+  select(SKU_stockey_sorted, `Merchant Name`, `master sku`, DI, `Non-AMZ Total Sales`, Dec)%>%
+  left_join(mastersku_c3, by=c("master sku"))%>%
+  left_join(mastersku_c32, by=c("master sku"))%>%
+  mutate(C32 = ifelse(Category3 == "CHRISTMAS DECORATION", "XMAS",ifelse(Category3 == "BEAN BAG", "Beanbag", C32)))%>%
+  mutate(C32 = ifelse(C32 %in% season_in$Category, C32, "Normal"))%>%
+  left_join(season_in, by=c("C32" = "Category"))%>%
+  mutate(Dec_yearly = `Non-AMZ Total Sales`/Dec_sea)
+forecast_12_new$Dec[which(is.na(forecast_12_new$Dec))]<-Dec
+forecast_12_new<-forecast_12_new%>%
+  mutate(Dec_weighted = Dec * Dec_yearly)%>%
+  group_by(SKU_stockey_sorted, `Merchant Name`)%>%
+  summarise(Dec_weighted = sum(Dec_weighted))
+
+
+# master_12<-forecast_12%>%
+#   group_by(`master sku`)%>%
+#   summarise(`Non-AMZ Total Sales` = sum(`Non-AMZ Total Sales`))%>%
+#   left_join(Master_DI_List, by=c("master sku"))
+# master_12$DI[which(is.na(master_12$DI))]<-""
+# 
+amz_12<-amz[which((amz$Date<=as.Date(end_date) & amz$Date>=as.Date(start_date))),]
+amz_12<-amz_12%>%
+  group_by(`master sku`, SKUOrder, SKU_stockey_sorted)%>%
+  summarise(`pieces sold`=sum(`Ordered Units`))%>%
+  left_join(df_indoor_4_amz, by=c("SKUOrder" = "skuorder"))%>%
+  left_join(cdf_amz, by=c("SKU_stockey_sorted"))%>%
+  mutate(online_days = day_Dec)%>%
+  mutate_at(c("cdf"), ~replace_na("80-100%"))
+loop_a<-which(is.na(amz_12$day_Dec))
+for (i in loop_a){
+  amz_12$day_Dec[i] = df_indoor_4_amz_add$day_Dec[which(df_indoor_4_amz_add$skuorder==amz_12$SKUOrder[i])[1]]
+  amz_12$Dec[i] = df_indoor_4_amz_add$Dec[which(df_indoor_4_amz_add$skuorder==amz_12$SKUOrder[i])[1]]
+}
+  
+weekly_12<-amz_12%>%
+  mutate(`AMZ Ordered Units` = 
+           ifelse(cdf == "0-20%", ifelse(online_days>=27, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*6*4.428571,`pieces sold`/online_days*5*4.428571)),
+                  ifelse(cdf=="20-40%", ifelse(online_days>=25, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5.5*4.428571,`pieces sold`/online_days*4.5*4.428571)),
+                         ifelse(cdf=="40-60%", ifelse(online_days>=23, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*5*4.428571,`pieces sold`/online_days*4*4.428571)),
+                                ifelse(cdf=="60-80%", ifelse(online_days>=20, `pieces sold`, ifelse(online_days>=10, `pieces sold`/online_days*4.5*4.428571,`pieces sold`/online_days*3.5*4.428571)),`pieces sold`
+                                       )))))
+# weekly_12$percent[which(is.na(weekly_12$percent))]<-1
+# weekly_12$DI[which(is.na(weekly_12$DI))]<-""
+# 
+# for (i in 1:nrow(weekly_12)){
+#   if(weekly_12$DI[i] == "DI"){
+#     weekly_12$percent[i] = min(0.3, weekly_12$percent[i])
+#   }
+# }
+amz_Dec<-weekly_12%>%
+  left_join(mastersku_c3, by=c("master sku"))%>%
+  left_join(mastersku_c32, by=c("master sku"))%>%
+  mutate(C32 = ifelse(Category3 == "CHRISTMAS DECORATION", "XMAS",ifelse(Category3 == "BEAN BAG", "Beanbag", C32)))%>%
+
+  mutate(C32 = ifelse(C32 %in% season_in$Category, C32, "Normal"))%>%
+  left_join(season_in, by=c("C32" = "Category"))%>%
+  mutate(`AMZ Yearly Weighted Sales` = 1 * `AMZ Ordered Units` / Dec_sea * Dec)%>%
+  select(`master sku`, `AMZ Ordered Units`, `AMZ Yearly Weighted Sales`, SKU_stockey_sorted)
+
+amz_Dec_sku_stockey<-amz_Dec%>%
+  group_by(SKU_stockey_sorted)%>%
+  summarise(`AMZ Dec Weighted Sales` = sum(`AMZ Yearly Weighted Sales`))
+# 
+# total_12_hm <- Master_SKU_in%>%
+#   full_join(weekly_12, by = c("Master SKU" = "master sku"))%>%
+#   full_join(actual_12, by = c("Master SKU" = "master sku"))%>%
+#   mutate(`HM pieces sold` =  ifelse(`SKU count`!=1, `Total Sales`*`HM pcs needed`, `Total Sales`),
+#          `actual_12` = ifelse(`SKU count`!=1, `actual_12`*`HM pcs needed`, `actual_12`))%>%
+#   rename(`SKU pieces sold` = `Total Sales`, )%>%
+#   select(`Master SKU`, `HM stockey`,
+#          `SKU pieces sold`, `HM pieces sold`, actual_12)%>%
+#   mutate(`Master SKU` = as.double(`Master SKU`))%>%
+#   arrange(`Master SKU`)
+# total_12_hm$`HM pieces sold`[which(is.na(total_12_hm$`HM pieces sold`))]<-0
+# total_12_hm$actual_12[which(is.na(total_12_hm$actual_12))]<-0
+# total_12_hm<-total_12_hm%>%
+#   group_by(`HM stockey`)%>%
+#   summarise(Actual_12 = sum(actual_12),
+#     `Forecast_12` = sum(`HM pieces sold`))
+# total_12_hm$`Forecast_12`[which(is.na(total_12_hm$`Forecast_12`))]<-0
+# 
+#  total_12_hm<-total_12_hm%>%
+#    mutate(Dec = Forecast_12 * Dec_in)
+#          Feb_12 = Forecast_12 * Feb_in,
+#          Mar_12 = Forecast_12 * Mar_in,
+#          Apr_12 = Forecast_12 * Apr_in,
+#          May_12 = Forecast_12 * May_in,
+#          Jun_12 = Forecast_12 * Jun_in,
+#          Jul_12 = Forecast_12 * Jul_in,
+#          Aug_12 = Forecast_12 * Aug_in,
+#          Sep_12 = Forecast_12 * Sep_in,
+#          Oct_12 = Forecast_12 * Oct_in,
+#          Nov_12 = Forecast_12 * Nov_in,
+#          Dec_12 = Forecast_12 * Dec_in,)
+```
+
+```{r}
+# total_indoor<-total_1_hm%>%
+#   left_join(total_2_hm, by=c("HM stockey"))%>%
+#   left_join(total_3_hm, by=c("HM stockey"))%>%
+#   left_join(total_4_hm, by=c("HM stockey"))%>%
+#   left_join(total_5_hm, by=c("HM stockey"))%>%
+#   left_join(total_6_hm, by=c("HM stockey"))%>%
+#   left_join(total_7_hm, by=c("HM stockey"))%>%
+#   left_join(total_8_hm, by=c("HM stockey"))%>%
+#   left_join(total_9_hm, by=c("HM stockey"))%>%
+#   left_join(total_10_hm, by=c("HM stockey"))%>%
+#   left_join(total_11_hm, by=c("HM stockey"))%>%
+#   left_join(total_12_hm, by=c("HM stockey"))
+```
+
+```{r}
+total_indoor_sku_new<-forecast_1_new%>%
+  full_join(forecast_2_new, by=c("SKU_stockey_sorted", "Merchant Name"))%>%
+  full_join(forecast_3_new, by=c("SKU_stockey_sorted", "Merchant Name"))%>%
+  full_join(forecast_4_new, by=c("SKU_stockey_sorted", "Merchant Name"))%>%
+  full_join(forecast_5_new, by=c("SKU_stockey_sorted", "Merchant Name"))%>%
+  full_join(forecast_6_new, by=c("SKU_stockey_sorted", "Merchant Name"))%>%
+  full_join(forecast_7_new, by=c("SKU_stockey_sorted", "Merchant Name"))%>%
+  full_join(forecast_8_new, by=c("SKU_stockey_sorted", "Merchant Name"))%>%
+  full_join(forecast_9_new, by=c("SKU_stockey_sorted", "Merchant Name"))%>%
+  full_join(forecast_10_new, by=c("SKU_stockey_sorted", "Merchant Name"))%>%
+  full_join(forecast_11_new, by=c("SKU_stockey_sorted", "Merchant Name"))%>%
+  full_join(forecast_12_new, by=c("SKU_stockey_sorted", "Merchant Name"))%>%
+  #left_join(df_indoor_4_group, by=c("SKU" = "skuorder", "Merchant Name" = "merchantid"))%>%
+  select(SKU_stockey_sorted, `Merchant Name`, Jan_weighted, Feb_weighted, Mar_weighted, Apr_weighted, May_weighted, Jun_weighted, Jul_weighted, Aug_weighted, Sep_weighted, Oct_weighted, Nov_weighted, Dec_weighted)%>%
+  replace(is.na(.),0)%>%
+  mutate(yearly_forecast = Jan_weighted + Feb_weighted+ Mar_weighted+ Apr_weighted+ May_weighted+ Jun_weighted+ Jul_weighted+ Aug_weighted+ Sep_weighted+ Oct_weighted+ Nov_weighted+ Dec_weighted)
+  #left_join(skutomastersku, by=c("SKU", "Merchant Name"))
+
+total_indoor_sku_new_group<-total_indoor_sku_new%>%
+  left_join(df_indoor_4_group, by=c("Merchant Name" = "merchantid", "SKU_stockey_sorted"))
+
+# sku_online<-read_csv("C:/Users/Yulin Pan/Downloads/SKU online details (2).csv")%>%
+#   #filter(inventorydate == as.Date("2023-01-14"))%>%
+#   select(skuorder, merchantid, mastersku, Offline_Reasons_Clean)
+
+total_indoor_sku_new_online<-total_indoor_sku_new
+  # left_join(sku_online, by=c("SKU" = "skuorder", "Merchant Name" = "merchantid"))
+```
+
+```{r}
+total_indoor_amz_new<-amz_Jan_sku_stockey%>%
+  full_join(amz_Feb_sku_stockey, by=c("SKU_stockey_sorted"))%>%
+  full_join(amz_Mar_sku_stockey, by=c("SKU_stockey_sorted"))%>%
+  full_join(amz_Apr_sku_stockey, by=c("SKU_stockey_sorted"))%>%
+  full_join(amz_May_sku_stockey, by=c("SKU_stockey_sorted"))%>%
+  full_join(amz_Jun_sku_stockey, by=c("SKU_stockey_sorted"))%>%
+  full_join(amz_Jul_sku_stockey, by=c("SKU_stockey_sorted"))%>%
+  full_join(amz_Aug_sku_stockey, by=c("SKU_stockey_sorted"))%>%
+  full_join(amz_Sep_sku_stockey, by=c("SKU_stockey_sorted"))%>%
+  full_join(amz_Oct_sku_stockey, by=c("SKU_stockey_sorted"))%>%
+  full_join(amz_Nov_sku_stockey, by=c("SKU_stockey_sorted"))%>%
+  full_join(amz_Dec_sku_stockey, by=c("SKU_stockey_sorted"))%>%
+  #left_join(df_indoor_4_group, by=c("SKU" = "skuorder", "Merchant Name" = "merchantid"))%>%
+  #select(SKU_stockey_sorted, `Merchant Name`, Jan_weighted, Feb_weighted, Mar_weighted, Apr_weighted, May_weighted, Jun_weighted, Jul_weighted, Aug_weighted, Sep_weighted, Oct_weighted, Nov_weighted, Dec_weighted)%>%
+  replace(is.na(.),0)%>%
+  mutate(yearly_amz = `AMZ Jan Weighted Sales` + `AMZ Feb Weighted Sales`+ `AMZ Mar Weighted Sales`+ `AMZ Apr Weighted Sales`+ `AMZ May Weighted Sales`+ `AMZ Jun Weighted Sales`+ `AMZ Jul Weighted Sales`+ `AMZ Aug Weighted Sales`+ `AMZ Sep Weighted Sales`+ `AMZ Oct Weighted Sales`+ `AMZ Nov Weighted Sales`+ `AMZ Dec Weighted Sales`)%>%
+  left_join(sales_amz_df_new, by=c("SKU_stockey_sorted"))%>%
+  mutate_at(c("percent_in"), ~replace_na(.,1))%>%
+  mutate_at(c("percent_di", "percent_df"), ~replace_na(.,0))%>%
+  mutate(DI_yearly = yearly_amz * percent_di,
+         IN_yearly = yearly_amz * percent_in,
+         DF_yearly = yearly_amz * percent_df)
+```
+
+
+```{r}
+# total_indoor_sku_new_online<-total_indoor_sku_new_online%>%
+#   mutate(`yearly_forecast` = ifelse(Offline_Reasons_Clean == "Has Inventory we not push-Product-PriceIssue"|Offline_Reasons_Clean == "Has Inventory we not push-Product-LowMargin"|Offline_Reasons_Clean == "NotActiveAtExtranet", `yearly_forecast` - `yearly_forecast`*Jan_in - `yearly_forecast`*Feb_in - `yearly_forecast`*Mar_in , `yearly_forecast`))
+
+total_indoor_sku_new_master<-total_indoor_sku_new_online%>%
+  group_by(`SKU_stockey_sorted`)%>%
+  summarise(`total_yearly` = sum(`yearly_forecast`))
+  # full_join(total_indoor_amz_new, by=c("SKU_stockey_sorted"))%>%
+  # replace(is.na(.),0)%>%
+  # mutate(total_yearly = yearly_forecast + yearly_amz)
+
+sku_hm_map_cleaned<-sku_hm_map%>%
+  group_by(SKU_stockey_sorted, `HM_stockey`)%>%
+  summarise(HM_Count = max(HM_Count), HM_pcs_needed = max(HM_pcs_needed))
+
+total_hm_in <- sku_hm_map_cleaned%>%
+  full_join(total_indoor_sku_new_master, by = c("SKU_stockey_sorted"))%>%
+  mutate(`HM pieces sold` =  ifelse(`HM_Count`!=1, `total_yearly`*`HM_pcs_needed`, `total_yearly`))%>%
+  select(`SKU_stockey_sorted`, `HM_stockey`,`HM pieces sold`)%>%
+  arrange(`SKU_stockey_sorted`)
+total_hm_in$`HM pieces sold`[which(is.na(total_hm_in$`HM pieces sold`))]<-0
+total_hm_in<-total_hm_in%>%
+  group_by(`HM_stockey`)%>%
+  summarise(`Forecast` = sum(`HM pieces sold`))
+total_hm_in$`Forecast`[which(is.na(total_hm_in$`Forecast`))]<-0
+
+
+# indoor_fc<-assortment_in%>%
+#   select(StockKey, `First Cost`)
+# 
+# total_indoor_hm_new<-total_hm_in%>%
+#   left_join(indoor_fc, by=c("HM_stockey" = "StockKey"))%>%
+#   filter(!is.na(`First Cost`))%>%
+#   mutate(yearly_amount_new = Forecast * `First Cost`)
+# 
+# 
+# 
+total_indoor_sku_new_master_amz<-total_indoor_amz_new%>%
+  group_by(`SKU_stockey_sorted`)%>%
+  summarise(`total_yearly` = sum(`yearly_amz`),
+            total_di = sum(DI_yearly),
+            total_in = sum(IN_yearly),
+            total_df = sum(DF_yearly))
+  # full_join(total_indoor_amz_new, by=c("SKU_stockey_sorted"))%>%
+  # replace(is.na(.),0)%>%
+  # mutate(total_yearly = yearly_forecast + yearly_amz)
+
+total_hm_amz_in <- sku_hm_map_cleaned%>%
+  full_join(total_indoor_sku_new_master_amz, by = c("SKU_stockey_sorted"))%>%
+  mutate(`HM pieces sold` =  `total_yearly`*`HM_pcs_needed`,
+         `DI pieces sold` =  `total_di`*`HM_pcs_needed`,
+         `IN pieces sold` =  `total_in`*`HM_pcs_needed`,
+         `DF pieces sold` =  `total_df`*`HM_pcs_needed`)%>%
+  select(`SKU_stockey_sorted`, `HM_stockey`,`HM pieces sold`,`DI pieces sold`, `IN pieces sold`, `DF pieces sold`)%>%
+  arrange(`SKU_stockey_sorted`)
+total_hm_amz_in$`HM pieces sold`[which(is.na(total_hm_amz_in$`HM pieces sold`))]<-0
+total_hm_amz_in$`DI pieces sold`[which(is.na(total_hm_amz_in$`DI pieces sold`))]<-0
+total_hm_amz_in$`IN pieces sold`[which(is.na(total_hm_amz_in$`IN pieces sold`))]<-0
+total_hm_amz_in$`DF pieces sold`[which(is.na(total_hm_amz_in$`DF pieces sold`))]<-0
+total_hm_amz_in<-total_hm_amz_in%>%
+  group_by(`HM_stockey`)%>%
+  summarise(`Forecast` = sum(`HM pieces sold`),
+            DI_forecast = sum(`DI pieces sold`),
+            IN_forecast = sum(`IN pieces sold`),
+            DF_forecast = sum(`DF pieces sold`))
+total_hm_amz_in$`Forecast`[which(is.na(total_hm_amz_in$`Forecast`))]<-0
+total_hm_amz_in$DI_forecast[which(is.na(total_hm_amz_in$DI_forecast))]<-0
+total_hm_amz_in$IN_forecast[which(is.na(total_hm_amz_in$IN_forecast))]<-0
+total_hm_amz_in$DF_forecast[which(is.na(total_hm_amz_in$DF_forecast))]<-0
+# 
+# total_indoor_hm_new_amz<-total_hm_amz_in%>%
+#   left_join(indoor_fc, by=c("HM_stockey" = "StockKey"))%>%
+#   filter(!is.na(`First Cost`))%>%
+#   mutate(yearly_amount_new = Forecast * `First Cost`,
+#          DI_amount = DI_forecast * `First Cost`,
+#          IN_amount = IN_forecast * `First Cost`,
+#          DF_amount = DF_forecast * `First Cost`)%>%
+#   mutate(summ = DI_amount+ IN_amount+ DF_amount,
+#          check = yearly_amount_new-(DI_amount+ IN_amount+ DF_amount))
+#          
+# 
+#          
+```
+
+```{r}
+# total_indoor_stockey<-total_indoor_hm_new%>%
+#   rename(`Non-AMZ` = Forecast)%>%
+#   left_join(total_indoor_hm_new_amz, by=c("HM_stockey"))
+```
+
+```{r}
+#2023 actual + 2023 forecast
+year_today=year(today())
+month_today = month(today())
+sales_2023<-sales%>%
+  filter(month(`Order Date`)<month_today & year(`Order Date`) == year_today)%>%
+  group_by(SKU_stockey_sorted)%>%
+  summarise(`pieces sold` = sum(`pieces sold`))%>%
+  left_join(sku_hm_map_cleaned, by=c("SKU_stockey_sorted"))%>%
+  mutate(`2023 actual pieces sold` =  ifelse(`HM_Count`!=1, `pieces sold`*`HM_pcs_needed`, `pieces sold`))%>%
+  group_by(HM_stockey)%>%
+  summarise(`2023 actual pieces sold` = sum(`2023 actual pieces sold`))
+
+# season_2023_in<-sum(season_in[month_today:12,])
+
+hm_c32<-assortment_in%>%
+  select(StockKey, `New Category3`, `New Category3-2`)
+
+current_month <- month(Sys.Date())
+
+months_to_sum <- seq(current_month, 12, by = 1)
+
+# Convert month indices to month names (abbreviated) with "_sea" added
+month_names <- paste(month.abb[months_to_sum], "_sea", sep = "")
+
+total_hm_in_new1<-total_hm_in%>%
+  full_join(sales_2023, by=c("HM_stockey"))%>%
+  mutate_at(c("2023 actual pieces sold"), ~replace_na(.,0))%>%
+  left_join(hm_c32, by=c("HM_stockey" = "StockKey"))%>%
+  mutate(`New Category3-2` = ifelse(`New Category3` == "CHRISTMAS DECORATION", "XMAS", ifelse(`New Category3` == "BEAN BAG", "Beanbag", `New Category3-2`)))%>%
+  mutate(`New Category3-2` = ifelse(`New Category3-2` %in% season_in$Category, `New Category3-2`, "Normal"))%>%
+  left_join(season_in, by=c("New Category3-2" = "Category"))
+total_hm_in_new<-total_hm_in_new1%>%
+  mutate(season_2023_in = rowSums(total_hm_in_new1[, month_names]))%>%
+  mutate(`2023 forecast pieces sold` = Forecast * season_2023_in,
+         `2023 forecast` = ifelse(Forecast == 0, 0, `2023 actual pieces sold` + `2023 forecast pieces sold`))%>%
+  select(-c(4:18))
+
+amz_2023<-amz%>%
+  filter(month(`Date`)<month_today & year(`Date`) == year_today)%>%
+  group_by(SKU_stockey_sorted)%>%
+  summarise(`pieces sold` = sum(`Ordered Units`))%>%
+  left_join(sku_hm_map_cleaned, by=c("SKU_stockey_sorted"))%>%
+  mutate(`2023 amz actual pieces sold` = `pieces sold`*`HM_pcs_needed`)%>%
+  group_by(HM_stockey)%>%
+  summarise(`2023 amz actual pieces sold` = sum(`2023 amz actual pieces sold`))
+
+sales_amz_actual <- sales_raw%>%
+  mutate(`master sku` = as.character(`master sku`))%>%
+  left_join(sku_stockey_to_mastersku, by=c("master sku" ))%>%
+  filter(!is.na(SKU_stockey_sorted))
+
+colnames(sales_amz_actual)[which(colnames(sales_amz_actual)=="merchantname")]<-"Merchant Name"
+colnames(sales_amz_actual)[which(colnames(sales_amz_actual)=="orderdate")]<-"Order Date"
+colnames(sales_amz_actual)[which(colnames(sales_amz_actual)=="skuorder")]<-"SKU"
+
+sales_amz_actual = sales_amz_actual[which(sales_amz_actual$`Merchant Name`=="AMAZONDIRECTIMPORTCKH" | sales_amz_actual$`Merchant Name`=="AMAZONINNETWORKCKH"| sales_amz_actual$`Merchant Name`=="AMAZONDIRECTFULFILLMENTCKH"),]
+
+amz_2023<-sales_amz_actual%>%
+  filter(month(`Order Date`)<month_today & year(`Order Date`) == year_today)%>%
+  left_join(sku_hm_map_cleaned, by=c("SKU_stockey_sorted"))%>%
+  mutate(`2023 amz actual pieces sold` = ifelse(`HM_Count`!=1, `pieces sold`*`HM_pcs_needed`, `pieces sold`))%>%
+  group_by(HM_stockey)%>%
+  summarise(`2023 amz actual pieces sold` = sum(`2023 amz actual pieces sold`))
+
+
+total_hm_amz_in_new1<-total_hm_amz_in%>%
+  full_join(amz_2023, by=c("HM_stockey"))%>%
+  mutate_at(c("2023 amz actual pieces sold"), ~replace_na(.,0))%>%
+  left_join(hm_c32, by=c("HM_stockey" = "StockKey"))%>%
+  mutate(`New Category3-2` = ifelse(`New Category3` == "CHRISTMAS DECORATION", "XMAS", ifelse(`New Category3` == "BEAN BAG", "Beanbag", `New Category3-2`)))%>%
+  mutate(`New Category3-2` = ifelse(`New Category3-2` %in% season_in$Category, `New Category3-2`, "Normal"))%>%
+  left_join(season_in, by=c("New Category3-2" = "Category"))
+total_hm_amz_in_new<-total_hm_amz_in_new1%>%
+  mutate(season_2023_in = rowSums(total_hm_amz_in_new1[, month_names]))%>%
+  mutate(`2023 forecast pieces sold` = Forecast * season_2023_in,
+         `2023 forecast` = `2023 forecast pieces sold`,
+         `2023 DI_forecast` = `2023 forecast` * DI_forecast / Forecast,
+         `2023 IN_forecast` = `2023 forecast` * IN_forecast / Forecast,
+         `2023 DF_forecast` = `2023 forecast` * DF_forecast / Forecast)%>%
+  mutate_at(c("2023 DI_forecast","2023 IN_forecast","2023 DF_forecast"), ~replace_na(.,0))%>%
+  select(-c(7:21))
+```
+
+```{r}
+sku_hm_map_count1<-sku_hm_map_cleaned%>%
+  filter(HM_Count == 1)
+total_indoor_sku_new_online_sets<-total_indoor_sku_new_online%>%
+  left_join(sku_hm_map_count1, by=c("SKU_stockey_sorted"))%>%
+  mutate(yearly_forecast_sets = ifelse(!is.na(HM_pcs_needed), yearly_forecast / HM_pcs_needed, yearly_forecast))
+```
+
+
+```{r}
+write_xlsx(total_indoor_sku_new_online_sets,"C:\\Users\\Yulin Pan\\Desktop\\48&12&4\\Oct 2023\\SKU_stockey_sorted forecast NON-AMAZON.xlsx")
+write_xlsx(total_indoor_amz_new,"C:\\Users\\Yulin Pan\\Desktop\\48&12&4\\Oct 2023\\SKU_stockey_sorted forecast AMAZON.xlsx")
+
+```
+
+
+
+
+
+
+
+
