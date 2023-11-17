@@ -1,0 +1,169 @@
+---
+title: "12 new NonAMZ &AMZ HM"
+output: html_document
+date: "2023-03-21"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+total_hm<-total_hm_in_new%>%
+  left_join(total_hm_out_new, by=c("HM_stockey"))%>%
+  mutate(Forecast = Forecast.x + Forecast.y,
+         `2023 actual` = `2023 actual pieces sold.x`,
+         `2023 forecast` = `2023 forecast pieces sold.x` + `2023 forecast pieces sold.y`)%>%
+  select(HM_stockey, Forecast, `2023 actual`, `2023 forecast`)
+
+total_hm_amz<-total_hm_amz_in_new%>%
+  left_join(total_hm_amz_out_new, by=c("HM_stockey"))%>%
+  mutate(Forecast = Forecast.x + Forecast.y,
+         DI_forecast = DI_forecast.x+DI_forecast.y,
+         IN_forecast = IN_forecast.x+IN_forecast.y,
+         DF_forecast = DF_forecast.x+DF_forecast.y,
+         `2023 actual` = `2023 amz actual pieces sold.x`,
+         `2023 DI_actual` = `2023 actual` * DI_forecast / Forecast,
+         `2023 IN_actual` = `2023 actual` * IN_forecast / Forecast,
+         `2023 DF_actual` = `2023 actual` * DF_forecast / Forecast,
+         `2023 forecast` = `2023 forecast.x` + `2023 forecast.y`,
+         `2023 DI_forecast` = `2023 DI_forecast.x` + `2023 DI_forecast.y`,
+         `2023 IN_forecast` = `2023 IN_forecast.x` + `2023 IN_forecast.y`,
+         `2023 DF_forecast` = `2023 DF_forecast.x` + `2023 DF_forecast.y`)%>%
+  mutate_at(c("2023 DI_actual","2023 IN_actual","2023 DF_actual"), ~replace_na(.,0))%>%
+  select(HM_stockey, Forecast, DI_forecast, IN_forecast, DF_forecast, `2023 actual`, `2023 DI_actual`, `2023 IN_actual`, `2023 DF_actual`, `2023 forecast`, `2023 DI_forecast`, `2023 IN_forecast`, `2023 DF_forecast`)
+
+```
+
+```{r}
+#INDOOR
+indoor_fc<-assortment_in%>%
+  select(StockKey, `First Cost`)
+
+disc_list = read_xlsx("C:/Users/Yulin Pan/Desktop/Discontinue List.xlsx", sheet = "overall")
+indoor_inv<-assortment_in%>%
+  select(StockKey, `HMNum 1`, `Sellable qty in USA`, `Current On water`, `On order`)
+
+total_indoor_hm_new<-total_hm
+  # left_join(indoor_fc, by=c("HM_stockey" = "StockKey"))%>%
+  # filter(!is.na(`First Cost`))
+  # mutate(yearly_amount_new = Forecast * `First Cost`,
+  #        `2023_yearly_amount_new` = `2023 forecast` * `First Cost`)
+
+
+
+total_indoor_hm_new_amz<-total_hm_amz
+  # left_join(indoor_fc, by=c("HM_stockey" = "StockKey"))%>%
+  # filter(!is.na(`First Cost`))
+  # mutate(yearly_amount_new = Forecast * `First Cost`,
+  #        DI_amount = DI_forecast * `First Cost`,
+  #        IN_amount = IN_forecast * `First Cost`,
+  #        DF_amount = DF_forecast * `First Cost`,
+  #        `2023_yearly_amount_new` = `2023 forecast` * `First Cost`,
+  #        `2023 DI_amount` = `2023 DI_forecast` * `First Cost`,
+  #        `2023 IN_amount` = `2023 IN_forecast` * `First Cost`,
+  #        `2023 DF_amount` = `2023 DF_forecast` * `First Cost`)
+  # mutate(summ = DI_amount+ IN_amount+ DF_amount,
+  #        check = yearly_amount_new-(DI_amount+ IN_amount+ DF_amount))
+
+
+total_indoor_stockey<-total_indoor_hm_new%>%
+  rename(`Rolling Non-AMZ` = Forecast,
+         `2023 Actual Non-AMZ` = `2023 actual`,
+         `2023 Forecast Non-AMZ` = `2023 forecast`)%>%
+  left_join(total_indoor_hm_new_amz, by=c("HM_stockey"))%>%
+  left_join(disc_list, by=c("HM_stockey" = "StockKey"))%>%
+  full_join(indoor_inv, by=c("HM_stockey" = "StockKey"))%>%
+  left_join(indoor_fc, by=c("HM_stockey" = "StockKey"))%>%
+  mutate_at(c("Disc"), ~replace_na(.,"N"))%>%
+  filter(!is.na(`First Cost`))%>%
+  relocate(c(`HMNum 1`,  `Sellable qty in USA`, `Current On water`, `On order`, `First Cost`), .before="Rolling Non-AMZ")%>%
+  #select(-`First Cost.y`)%>%
+  #rename(`First Cost` = `First Cost.x`)%>%
+  mutate(`IN%` = ifelse(`Rolling Non-AMZ`+ IN_forecast + DF_forecast == 0, 0, IN_forecast /(`Rolling Non-AMZ`+ IN_forecast + DF_forecast)),
+         `DF%` = ifelse(`Rolling Non-AMZ`+ IN_forecast + DF_forecast == 0, 0, DF_forecast /(`Rolling Non-AMZ`+ IN_forecast + DF_forecast)),
+         Total_forecast = `Rolling Non-AMZ` + IN_forecast + DF_forecast,
+         Total_2023_actual = `2023 Actual Non-AMZ` + `2023 IN_actual` + `2023 DF_actual`,
+         Total_2023_forecast = `2023 Forecast Non-AMZ` + `2023 IN_forecast` + `2023 DF_forecast`)%>%
+  mutate(Total_forecast = ifelse(Disc == "Y", pmin(Total_forecast, (`Sellable qty in USA`+ `Current On water` + `On order`)), Total_forecast),
+         Total_2023_forecast = ifelse(Disc == "Y", pmin(Total_2023_forecast, (`Sellable qty in USA`+ `Current On water`+ `On order`)), Total_2023_forecast))%>%
+  mutate(`Rolling 12-month US QTY` = Total_forecast,
+         `Rolling 12-month US AMT` = `Rolling 12-month US QTY` * `First Cost`,
+         `2023 Forecast US QTY` = Total_2023_actual + Total_2023_forecast,
+         `2023 Forecast US AMT` = `2023 Forecast US QTY` * `First Cost`)%>%
+  mutate_at(c("Rolling 12-month US QTY", "Rolling 12-month US AMT", "2023 Forecast US QTY", "2023 Forecast US AMT"), ~replace_na(.,0))
+```
+
+```{r}
+write_xlsx(total_indoor_hm_new,"C:\\Users\\Yulin Pan\\Desktop\\48&12&4\\Oct 2023\\stockey forecast NON-AMAZON.xlsx")
+write_xlsx(total_indoor_hm_new_amz,"C:\\Users\\Yulin Pan\\Desktop\\48&12&4\\Oct 2023\\stockey forecast AMAZON.xlsx")
+write_xlsx(total_indoor_stockey,"C:\\Users\\Yulin Pan\\Desktop\\48&12&4\\Oct 2023\\stockey forecast overall1.xlsx")
+```
+
+
+```{r}
+#OUTDOOR
+outdoor_fc<-assortment_out%>%
+  select(stockkey, `Last First Cost`)
+
+disc_list = read_xlsx("C:/Users/Yulin Pan/Desktop/Discontinue List.xlsx", sheet = "overall")
+  #select(-`HMNum 1`)
+outdoor_inv<-assortment_out%>%
+  select(stockkey,`HMNum 1`, `Sellable`, `On water`, `On order`)
+
+total_outdoor_hm_new<-total_hm
+  # left_join(outdoor_fc, by=c("HM_stockey" = "stockkey"))%>%
+  # filter(!is.na(`Last First Cost`))
+  # mutate(yearly_amount_new = Forecast * `First Cost`,
+  #        `2023_yearly_amount_new` = `2023 forecast` * `First Cost`)
+
+
+
+total_outdoor_hm_new_amz<-total_hm_amz
+  # left_join(outdoor_fc, by=c("HM_stockey" = "stockkey"))%>%
+  # filter(!is.na(`Last First Cost`))
+  # mutate(yearly_amount_new = Forecast * `First Cost`,
+  #        DI_amount = DI_forecast * `First Cost`,
+  #        IN_amount = IN_forecast * `First Cost`,
+  #        DF_amount = DF_forecast * `First Cost`,
+  #        `2023_yearly_amount_new` = `2023 forecast` * `First Cost`,
+  #        `2023 DI_amount` = `2023 DI_forecast` * `First Cost`,
+  #        `2023 IN_amount` = `2023 IN_forecast` * `First Cost`,
+  #        `2023 DF_amount` = `2023 DF_forecast` * `First Cost`)
+  # mutate(summ = DI_amount+ IN_amount+ DF_amount,
+  #        check = yearly_amount_new-(DI_amount+ IN_amount+ DF_amount))
+
+
+total_outdoor_stockey<-total_outdoor_hm_new%>%
+  rename(`Rolling Non-AMZ` = Forecast,
+         `2023 Actual Non-AMZ` = `2023 actual`,
+         `2023 Forecast Non-AMZ` = `2023 forecast`)%>%
+  left_join(total_outdoor_hm_new_amz, by=c("HM_stockey"))%>%
+  left_join(disc_list, by=c("HM_stockey" = "StockKey"))%>%
+  full_join(outdoor_inv, by=c("HM_stockey" = "stockkey"))%>%
+  left_join(outdoor_fc, by=c("HM_stockey" = "stockkey"))%>%
+  mutate_at(c("Disc"), ~replace_na(.,"N"))%>%
+  filter(!is.na(`Last First Cost`))%>%
+  relocate(c(`HMNum 1`,  `Sellable`, `On water`, `On order`, `Last First Cost`), .before="Rolling Non-AMZ")%>%
+  #select(-`Last First Cost.y`)%>%
+  rename(`First Cost` = `Last First Cost`)%>%
+  mutate(`IN%` = ifelse(`Rolling Non-AMZ`+ IN_forecast + DF_forecast == 0, 0, IN_forecast /(`Rolling Non-AMZ`+ IN_forecast + DF_forecast)),
+         `DF%` = ifelse(`Rolling Non-AMZ`+ IN_forecast + DF_forecast == 0, 0, DF_forecast /(`Rolling Non-AMZ`+ IN_forecast + DF_forecast)),
+         Total_forecast = `Rolling Non-AMZ` + IN_forecast + DF_forecast,
+         Total_2023_actual = `2023 Actual Non-AMZ` + `2023 IN_actual` + `2023 DF_actual`,
+         Total_2023_forecast = `2023 Forecast Non-AMZ` + `2023 IN_forecast` + `2023 DF_forecast`)%>%
+  mutate(Total_forecast = ifelse(Disc == "Y", pmin(Total_forecast, (`Sellable`+ `On water`+ `On order`)), Total_forecast),
+         Total_2023_forecast = ifelse(Disc == "Y", pmin(Total_2023_forecast, (`Sellable`+ `On water` + `On order`)), Total_2023_forecast))%>%
+  mutate(`Rolling 12-month US QTY` = Total_forecast,
+         `Rolling 12-month US AMT` = `Rolling 12-month US QTY` * `First Cost`,
+         `2023 Forecast US QTY` = Total_2023_actual + Total_2023_forecast,
+         `2023 Forecast US AMT` = `2023 Forecast US QTY` * `First Cost`)%>%
+  mutate_at(c("Rolling 12-month US QTY", "Rolling 12-month US AMT", "2023 Forecast US QTY", "2023 Forecast US AMT"), ~replace_na(.,0))
+```
+
+```{r}
+write_xlsx(total_outdoor_hm_new,"C:\\Users\\Yulin Pan\\Desktop\\48&12&4\\Oct 2023\\stockey forecast NON-AMAZON out.xlsx")
+write_xlsx(total_outdoor_hm_new_amz,"C:\\Users\\Yulin Pan\\Desktop\\48&12&4\\Oct 2023\\stockey forecast AMAZON out.xlsx")
+write_xlsx(total_outdoor_stockey,"C:\\Users\\Yulin Pan\\Desktop\\48&12&4\\Oct 2023\\stockey forecast overall out1.xlsx")
+```
+
