@@ -56,9 +56,9 @@ Repeat this step for all SKU channels in all months.
 
 ## Other Note
 ### Amazon portal sales difference
-- DI:
-- IN:
-- DF:
+- DI: It stands for Amazon Direct Import, where Amazon picks up items from the port of delivery, handles international transportation, customs, import duties, and local delivery.
+- IN: It stands for Amazon InNetwork, where vendors pick up items from the port of delivery, handles international transportation, customs, import duties, and store in Amazon Warehouse, then Amazon takes care of local delivery.
+- DF: It stands for Amazon Direct Fulfillment, where vendors handle the entire shipment process and ship the orders directly to the customers.
 
 ## Author
 
